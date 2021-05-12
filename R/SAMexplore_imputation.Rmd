@@ -1,0 +1,888 @@
+---
+title: "Passive imputation SAM explore"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+Many questionnaires were collected in the SAM explore project. To deal with missing values in the questionnaire data, the passive imputation method described by  [Eekhout et al (2018)](http://journals.sagepub.com/doi/10.1177/0962280216654511) is followed.
+
+# A. Preparations
+
+The dataset with recoded questionnaire items and total scores, endocrine data (salivary cortisol and alpha-amylase) and preprocessed outcomes of the [Contextual Memory Task](https://doi.org/10.1016/j.psyneuen.2019.06.021) and [Fear Generalization Task](https://doi.org/10.1177/2470547019896547) is loaded.
+```{r setup, include=T, message = FALSE}
+rm(list=ls())
+library(dplyr)
+library(mice)
+```
+
+```{r load data, include=T, message = FALSE}
+readRDS("processed_data/SAM_complete.rds")->df_sam
+```
+
+## A1. Variable Names
+Create vectors with variable names for covariates, questionnaire items, total sores and subscales, endocrine measures and memory performance
+
+#### Covariates
+Age, BMI and experimental condition are predictors for all variables
+```{r covars}
+covars<-c("age", "BMI", "Condition")
+```
+
+#### Questionnaire items
+
+Symptom Checklist Items (SCL)
+```{r scl items}
+paste0("SCL_",rep(1:90))->scl_items # create items names
+# scl subscales
+Som_klachten=c("SCL_1", "SCL_4", "SCL_12", "SCL_27", "SCL_40", "SCL_42", "SCL_48", "SCL_49", "SCL_52", "SCL_53", "SCL_56", "SCL_58")
+Insufficientie_dh=c("SCL_9", "SCL_10", "SCL_28", "SCL_38", "SCL_45", "SCL_46", "SCL_55", "SCL_65", "SCL_71")
+Sensitiviteit=c("SCL_6", "SCL_7", "SCL_8", "SCL_18", "SCL_21", "SCL_34", "SCL_35", "SCL_36", "SCL_37", "SCL_41", "SCL_43", "SCL_61", "SCL_68", "SCL_69", "SCL_73", "SCL_76", "SCL_83", "SCL_88")
+Depressie=c("SCL_3", "SCL_5", "SCL_14", "SCL_15", "SCL_19", "SCL_20", "SCL_22", "SCL_26", "SCL_29", "SCL_30", "SCL_31", "SCL_32", "SCL_51", "SCL_54", "SCL_59", "SCL_79")
+Angst=c("SCL_2", "SCL_17", "SCL_23", "SCL_33", "SCL_39", "SCL_57", "SCL_72", "SCL_78", "SCL_80", "SCL_86")
+Hostiliteit=c("SCL_11", "SCL_24", "SCL_63", "SCL_67", "SCL_74", "SCL_81")
+Agorafobie=c("SCL_13", "SCL_25", "SCL_47", "SCL_50", "SCL_70", "SCL_75", "SCL_82")
+Slaapprob=c("SCL_44", "SCL_64", "SCL_66")
+```
+Childhood Trauma Questionnaire Items (CTQ)
+```{r jtv items}
+(grep("JTV__", names(df_sam), value = T)) ->jtv_items
+#jtv subscales
+jtv.PA.items=c("JTV__I", "JTV__J", "JTV__K", "JTV__N", "JTV__O")
+jtv.EA.items=c("JTV__C", "JTV__H", "JTV__M", "JTV__P", "JTV__V")
+jtv.SA.items=c("JTV__R", "JTV__S", "JTV__T", "JTV__X", "JTV__U")
+jtv.PN.items=c("JTV__A", "JTV__B", "JTV__D", "JTV__F", "JTV__W")
+jtv.EN.items=c("JTV__E", "JTV__G", "JTV__L", "JTV__Q", "JTV__Y")
+```
+Life Stressor Checklist Items
+```{r LSC items}
+paste0("LSC_", rep(1:29))->lsc_items
+```
+STAI Trait Items
+```{r stait items}
+grep("StaiTr", names(df_sam), value=T) -> stait_items
+```
+Hexaco items
+Note, there is no total score for the HEXACO, only subscale scores
+```{r Hexaco items}
+paste0("HEXACO_",rep(1:60))-> hexaco_items 
+hexaco.hh<-paste0("HEXACO_",c(6, 30, 54, 12, 36, 60, 18, 42, 24,48))
+hexaco.emo<- paste0("HEXACO_",c(5,29,53,11,35,17,41,23,47,59)) 
+hexaco.extr<- paste0("HEXACO_",c(4,28,52,10,34,58,16,40,22,46)) 
+hexaco.ag<- paste0("HEXACO_",c(3,27,9,33,51,15,39,57,21,45)) 
+hexaco.co<- paste0("HEXACO_",c(2,26,8,32,14,38,50,20,44,56))
+hexaco.op<- paste0("HEXACO_",c(1,25,7,31,13,37,49,19,43,55))
+```
+Short Temprament & Character Quesionnaire (Cloninger) items (VTCI)
+Note, there is no total score in the VTCI, only subscale scores
+```{r VTCI items}
+paste0("VTCI_",rep(1:105))-> vtci_items 
+c("VTCI_1" , "VTCI_11" , "VTCI_22" , "VTCI_28" , "VTCI_34" , "VTCI_36" , "VTCI_42" , 
+  "VTCI_55" , "VTCI_66" , "VTCI_70" , "VTCI_85" , "VTCI_86" , "VTCI_91" , "VTCI_96" , "VTCI_105")->VTCI_NS.items
+c("VTCI_2" , "VTCI_10" , "VTCI_13" , "VTCI_16" , "VTCI_29" , "VTCI_48" , "VTCI_57" , 
+  "VTCI_60" , "VTCI_65" , "VTCI_71" , "VTCI_74" , "VTCI_83" , "VTCI_94" , "VTCI_98" , "VTCI_104") -> VTCI_HA.items
+c("VTCI_3" , "VTCI_12" , "VTCI_17" , "VTCI_23" , "VTCI_30" , "VTCI_37" , "VTCI_43" , 
+  "VTCI_51" , "VTCI_59" , "VTCI_72" , "VTCI_81" , "VTCI_82" , "VTCI_90" , "VTCI_95" , "VTCI_102")->VTCI_RD.items
+c("VTCI_7" , "VTCI_9" , "VTCI_15" , "VTCI_19" , "VTCI_26" , "VTCI_35" , "VTCI_41" , 
+  "VTCI_47" , "VTCI_52" , "VTCI_56" , "VTCI_64" , "VTCI_69" , "VTCI_76" , "VTCI_92" , "VTCI_99")->VTCI_PS.items
+c("VTCI_4" , "VTCI_8" , "VTCI_14" , "VTCI_21" , "VTCI_33" , "VTCI_45" , "VTCI_53" , 
+  "VTCI_54" , "VTCI_58" , "VTCI_61" , "VTCI_75" , "VTCI_77" , "VTCI_84" , "VTCI_101" , "VTCI_103")->VTCI_SD.items
+c("VTCI_6" , "VTCI_18" , "VTCI_24" , "VTCI_25" , "VTCI_32" , "VTCI_40" , "VTCI_46" , 
+  "VTCI_50" , "VTCI_62" , "VTCI_63" , "VTCI_68" , "VTCI_73" , "VTCI_78" , "VTCI_80" , "VTCI_100")->VTCI_CO.items
+c("VTCI_5" , "VTCI_20" , "VTCI_31" , "VTCI_38" , "VTCI_39" , "VTCI_44" , "VTCI_49" , 
+  "VTCI_67" , "VTCI_79" , "VTCI_87" , "VTCI_88" , "VTCI_89" , "VTCI_93" , "VTCI_97") ->VTCI_ST.items
+```
+
+VAS scales for anxiety (A) and mood (B)
+```{r vas items}
+df_sam %>% select(grep("VAS.*_A", names(.))) %>% colnames() ->VAS.A.items
+df_sam %>% select(grep("VAS.*_B", names(.))) %>% colnames() ->VAS.B.items
+#VasA: Not tense at all - quite tense
+#VASb: positive - negative
+```
+
+STAI State items
+```{r stais items}
+df_sam %>% select(grep("StaiSt", names(.))) %>% colnames -> stais.items
+```
+
+Positive and Negative affect scale Items
+```{r panas items}
+df_sam %>% select(grep("PANAS.*__", names(.))) %>% colnames->panas.items
+grep('_A|_C|_E|_I|_J|_L|_N|_P|_Q|_S' , panas.items,value = T) -> panas.pos.items
+grep('_B|_D|_F|_G|_H|_K|_M|_O|_R|_T' , panas.items,value = T) -> panas.neg.items
+```
+
+#### Total scores and subscale scores from questionnaires 
+There are no subscales in STAI Trait and the Life Stressor Check list. There are subscale scores in the CTQ, SCL, Hexaco and VTCI
+```{r questionnaire total scores and subscales}
+scl.subscales<-c("SCL_SOM_total", "SCL_OC_total", "SCL_IS_total", "SCL_DEP_total", "SCL_ANX_total", "SCL_HOS_total", "SCL_PHOB_total", "SCL_Sleep_total")
+jtv.subscales<-c("JTV_PA_total", "JTV_EA_total", "JTV_SA_total", "JTV_PN_total", "JTV_EN_total")
+hexaco.subscales <- c("HEXACO_hh.mean", "HEXACO_emo.mean", "HEXACO_extr.mean", "HEXACO_ag.mean", "HEXACO_co.mean", "HEXACO_op.mean")
+vtci.subscales <- c( "VTCI_SD_total",  "VTCI_NS_total", "VTCI_CO_total", "VTCI_HA_total",  "VTCI_ST_total",  "VTCI_RD_total", "VTCI_PS_total")
+
+all.t0.total<-c( "SCL_total", "JTV_total", "LSC_event_total", "STAI_T_total" , 
+                 scl.subscales, jtv.subscales,
+                 hexaco.subscales, vtci.subscales)
+
+all.t0.total[!(all.t0.total %in% scl.subscales) & !(all.t0.total %in% jtv.subscales)] ->all.t0.nosub
+
+all.stais.total<-c( "STAIS_Total_1", "STAIS_Total_2", "STAIS_Total_3" ,"STAIS_Total_4", "STAIS_Total_5", "STAIS_Total_6", "STAIS_Total_7", "STAIS_Total_8", "STAIS_Total_9")
+
+all.panas.total<-c(  "PANAS_1_PosA", "PANAS_2_PosA", "PANAS_3_PosA", "PANAS_4_PosA", "PANAS_5_PosA" ,"PANAS_6_PosA", "PANAS_7_PosA", "PANAS_8_PosA" ,"PANAS_9_PosA", #panas positive
+                     "PANAS_1_NegA", "PANAS_2_NegA", "PANAS_3_NegA", "PANAS_4_NegA", "PANAS_5_NegA", "PANAS_6_NegA", "PANAS_7_NegA", "PANAS_8_NegA", "PANAS_9_NegA")# panas negative
+# split total scores in positive and negative
+grep('Pos' , all.panas.total,value = T) -> panas.pos.total
+grep('Neg' , all.panas.total,value = T) -> panas.neg.total
+```
+
+#### Endocrine measures (per timepoint)
+```{r endocrine measures}
+grep('sAA' , names(df_sam),value = T) -> sAA.items
+grep('CORT' , names(df_sam),value = T) -> cort.items
+```
+
+#### Context-dependent memory measures from CMT and FGT tasks. 
+CMT items and scores.
+Note CMT measures are not imputed. For some participants the whole CMT is missing (they did not perform the task), there are no missing values in the participants that did perform the task.
+```{r CMT scores}
+memory.scores<-c("neutral.memory", "emotional.memory")
+# is.na(neutral.negative.memories) 
+```
+FGT items & scores
+```{r FGT scores}
+grep('sA_Cue_Smag|sG_Cue_Smag', names(df_sam),value = T) -> fear.items
+grep('threat|safe|new|fear', names(df_sam),value = T)->fear.scores
+outcomes<-c("fear.memory", "fear.learning")
+```
+
+## A2. Subset data
+Create a subset dataframe with variables for imputation/analysis
+```{r analysis df}
+df_sam %>% select(
+  # background & covariates
+  subject, lengte, gewicht,
+  covars,
+  # other demographics
+  "burgstat", "kinderen", "werksitu", "handpref",  "opleiding", "roken", "alcohol", "drugs", 
+  "drugs_welke_A", "drugs_welke_B", "drugs_welke_C", "drugs_welke_D", "drugs_welke_E", "drugs_welke_F", "medicatie", "psychol", "lich_ziekte",  
+  "meerling", "nachtritme_verst",
+  #items netq questionnaires
+  scl_items, jtv_items, lsc_items, stait_items, hexaco_items, vtci_items, VAS.A.items, VAS.B.items, stais.items, panas.items,
+  # total scores & subscales netq questionnaires
+  all.t0.total, all.stais.total, all.panas.total,
+  #endocrine
+  sAA.items, cort.items,
+  #memory (outcomes)
+  fear.items, fear.scores, memory.scores
+) -> df_clean
+# glimpse(df_clean)
+# df_clean$subject
+```
+
+## A3. Variable types
+Update variable types in subsetted dataframe, because Mice uses variable format to determine the imputation method.
+Numeric variables: covariates, questionnaire items; questionnaire total scores and subscales; endocrine; memory scores
+```{r recode data to numeric}
+num_cols<-c("age", "BMI", "lengte", "gewicht",
+            scl_items, jtv_items, lsc_items, stait_items, hexaco_items, vtci_items, stais.items, panas.neg.items, panas.pos.items,
+            all.t0.total, all.stais.total, panas.neg.total, panas.pos.total,
+            cort.items, sAA.items,
+            fear.items, fear.scores, memory.scores)
+df_clean%>% mutate_at(., num_cols, as.character) %>%
+  mutate_at(., num_cols, as.numeric)->df_clean
+```
+Factor variables: covariates and demographics
+```{r recode data to factor}
+factor_cols<-c("subject", "Condition", "burgstat", "kinderen", "werksitu", "handpref",  "opleiding", "roken", "alcohol", "drugs", "drugs_welke_A", "drugs_welke_B", "drugs_welke_C", "drugs_welke_D", "drugs_welke_E", "drugs_welke_F", "medicatie", "psychol", "lich_ziekte", "meerling", "nachtritme_verst")
+df_clean%>% mutate_at(.,factor_cols, as.factor ) -> df_clean # NB this KEEPS haven labels see https://haven.tidyverse.org/reference/as_factor.html 
+```
+
+## A4. Missing index
+If 70% of items from a questionnaire (at a timepoint) is missing, the total score & subscales (that will be used in analysis) are imputed directly. Otherwise, passive imputation is used.
+A function was created to create the missing index ...
+```{r function for missing index for questionnaires}
+count.missings<- function(df, items){
+  miss.count<- rowSums(is.na(df[,items]))
+  miss.prop<- (miss.count) / length(items)
+  miss.index<-ifelse(miss.prop >0.70, 1,0)
+  return(miss.index)
+}
+```
+... and then applied to all T0 questionnaires
+```{r call function missing index for T0 questionnaires}
+count.missings(df_clean, scl_items)->df_clean$scl.miss.index
+count.missings(df_clean, jtv_items)->df_clean$jtv.miss.index
+count.missings(df_clean, lsc_items)->df_clean$lsc.miss.index
+count.missings(df_clean, stait_items)->df_clean$stait.miss.index
+count.missings(df_clean, hexaco_items)->df_clean$hexaco.miss.index
+count.missings(df_clean, vtci_items)->df_clean$vtci.miss.index
+```
+.. Stai state questionnaires
+```{r call function missing index for stais}
+for(i in 1:9){
+  grep(paste0("StaiSt",i,"__*"), x = names(df_clean), value = TRUE) -> these.stais.items
+  count.missings(df_clean, these.stais.items) -> this.miss.index 
+  cbind(df_clean, this.miss.index)->df_clean
+  colnames(df_clean)[ncol(df_clean)] <-paste0("stais",i,".miss.index")
+}
+```
+... and PANAS questionnaires
+```{r call function missing index for PANAS}
+for(i in 1:9){
+  grep(paste0(i,'__A|',i,'__C|', i,'__E|',i,'__I|',i,'__J|', i,'__L|',i,'__N|',i,'__P|',i,'__Q|',i,'__S' ), panas.items,value = T) ->these.panas.pos
+  count.missings(df_clean, these.panas.pos) -> this.miss.index 
+  cbind(df_clean, this.miss.index)->df_clean
+  colnames(df_clean)[ncol(df_clean)] <-paste0("panas.pos",i,".miss.index")
+}
+for(i in 1:9){
+  grep(paste0(i,'__B|',i,'__D|',i,'__F|',i,'__G|',i,'__H|',i,'__K|',i,'__M|',i,'__O|',i,'__R|',i,'__T') , panas.items,value = T) ->these.panas.neg
+  count.missings(df_clean, these.panas.neg) -> this.miss.index 
+  cbind(df_clean, this.miss.index)->df_clean
+  colnames(df_clean)[ncol(df_clean)] <-paste0("panas.neg",i,".miss.index")
+}
+```
+
+.. fear scores
+```{r}
+grep('sG_Cue_Smag', names(df_sam),value = T) -> fear.memory.items
+grep('sA_Cue_Smag', names(df_sam),value = T) -> fear.learn.items
+
+count.missings(df_clean, fear.memory.items) ->df_clean$fear.memory.miss.index
+count.missings(df_clean, fear.learn.items) ->df_clean$fear.learn.items
+```
+
+
+# save cleaned data (for descriptive tables)
+```{r}
+saveRDS(df_clean,"processed_data/df_clean_for_MI.RDS")
+```
+
+# B. Direct Imputation
+Set-up direct imputation for questionnaire total scores.
+Note, these imputations will be used if >70% of items of that scale is missing for a subject
+
+## B1. Subset Total Scores
+Data frame with only covariates, questionnaire total and subscales scores and fear memory measures
+```{r subset df total score for imputation}
+df_clean%>% select("subject", covars, all.t0.total, all.stais.total, all.panas.total, outcomes) ->df_TS_imp
+```
+## B2. Predictors Total scores
+Predictors for the total scores (and subscales) covariates, total scores of other questionnaires and fear memory measures.
+First an empty predictor matrix is created (i.e. all 0's).
+```{r empty predictor matrix total scores}
+predictorMatrix.scores <- matrix(0, ncol = length(df_TS_imp), nrow = length(df_TS_imp)) # all 0's
+rownames(predictorMatrix.scores) <- colnames(df_TS_imp)
+colnames(predictorMatrix.scores) <- colnames(df_TS_imp)
+```
+Then the predictors for the total scores are indicated with 1's.
+```{r indicate predictors total scores}
+scores.to.impute<-c(all.t0.total, all.stais.total, all.panas.total, outcomes)
+predictorMatrix.scores[scores.to.impute,c(covars, all.t0.nosub, all.stais.total, all.panas.total, outcomes)]<-1
+```
+Finally the diagonal is set to 0, because variables can not be their own predictor.
+```{r direct imputation diagonal to 0}
+diag(predictorMatrix.scores)<-0
+```
+
+
+# C. Passive Imputation
+Set-up passive multiple imputation, for information on the steps: https://www.gerkovink.com/miceVignettes/Passive_Post_processing/Passive_imputation_post_processing.html
+
+## C1 Subset Data 
+Create a dataframe with all covariates, demographics, questionnaire items, total scores, subscales, endocrine measures and memory performance needed for imputation
+```{r df passive imputation}
+df_clean%>% select(
+  subject, lengte, gewicht,
+  covars,
+  "roken", "alcohol", "drugs", 
+  "medicatie",
+  "psychol", "lich_ziekte",  
+  "nachtritme_verst",
+  scl_items, jtv_items, lsc_items, stait_items, hexaco_items, vtci_items, VAS.A.items, VAS.B.items, stais.items, panas.items,
+  all.t0.total, all.stais.total, all.panas.total,
+  sAA.items, cort.items,
+  fear.items, fear.scores, memory.scores)->df.pas.imp
+```
+
+## C2. Adapt imputation models
+
+#### C2.1 Inital models
+Dry imputation from MICE is used to create initial imputation models (or methods).
+```{r inital imputation method, warning=FALSE}
+mice(df.pas.imp, maxit=0, print=F)->ini.pas.imp
+ini.pas.imp$loggedEvents
+ini.pas.imp$method->meth
+```
+Then the initial methods are modified, to preserve the relation between item & total scores. 
+Two functions were created to adapt methods for sum-scores & means-cores in the data.
+```{r functions to update imputation methods}
+adapt.method.sum<-function(meth, target.var, items){
+  # function to adapt imputation method for sum scores
+  meth[target.var] <- paste0("~ I(",paste0(items, collapse = " + "),")")
+  return(meth)
+}
+adapt.method.mean<-function(meth, target.var, items){
+  # function to adapt imputation method for mean scores
+  meth[target.var] <-paste0("~ I((",paste0(items, collapse = " + "),")/",length(items),")")
+  return(meth)
+}
+```
+
+#### C2.2. Adapted T0 models
+Adaptation of the imputations methods for BMI, and questionnaire total scores and subscales at T0 (SCL, JTV, LSCR, HEXACO, VTCI, STAI Trait)
+```{r adapt imputation methods T0}
+# demographics
+meth["BMI"]<- "~ I(gewicht/(lengte/100)^2)"
+
+#total scores
+adapt.method.sum(meth=meth, target.var="SCL_total", items=scl_items)->meth
+adapt.method.sum(meth=meth, target.var="JTV_total", items=jtv_items)->meth
+adapt.method.sum(meth=meth, target.var="LSC_event_total", items=lsc_items)->meth
+adapt.method.sum(meth=meth, target.var="STAI_T_total", items=stait_items)->meth
+
+# SCL subscales
+adapt.method.sum(meth=meth, target.var="SCL_SOM_total", items=Som_klachten)->meth
+adapt.method.sum(meth=meth, target.var="SCL_OC_total", items=Insufficientie_dh)->meth
+adapt.method.sum(meth=meth, target.var="SCL_IS_total", items=Sensitiviteit)->meth
+adapt.method.sum(meth=meth, target.var="SCL_DEP_total", items=Depressie)->meth
+adapt.method.sum(meth=meth, target.var="SCL_ANX_total", items=Angst)->meth
+adapt.method.sum(meth=meth, target.var="SCL_HOS_total", items=Hostiliteit)->meth
+adapt.method.sum(meth=meth, target.var="SCL_PHOB_total", items=Agorafobie)->meth
+adapt.method.sum(meth=meth, target.var="SCL_Sleep_total", items=Slaapprob)->meth
+
+# JTV subscales
+adapt.method.sum(meth=meth, target.var="JTV_PA_total", items=jtv.PA.items)->meth
+adapt.method.sum(meth=meth, target.var="JTV_EA_total", items=jtv.EA.items)->meth
+adapt.method.sum(meth=meth, target.var="JTV_SA_total", items=jtv.SA.items)->meth
+adapt.method.sum(meth=meth, target.var="JTV_PN_total", items=jtv.PN.items)->meth
+adapt.method.sum(meth=meth, target.var="JTV_EN_total", items=jtv.EN.items)->meth
+
+# vtci subscales
+adapt.method.sum(meth=meth, target.var="VTCI_NS_total", items=VTCI_NS.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_HA_total", items=VTCI_HA.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_RD_total", items=VTCI_RD.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_PS_total", items=VTCI_PS.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_SD_total", items=VTCI_SD.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_CO_total", items=VTCI_CO.items)->meth
+adapt.method.sum(meth=meth, target.var="VTCI_ST_total", items=VTCI_ST.items)->meth
+
+# Hexaco subscales
+adapt.method.mean(meth,"HEXACO_hh.mean", hexaco.hh)->meth
+adapt.method.mean(meth,"HEXACO_emo.mean", hexaco.emo)->meth
+adapt.method.mean(meth,"HEXACO_extr.mean", hexaco.extr)->meth
+adapt.method.mean(meth,"HEXACO_ag.mean", hexaco.ag)->meth
+adapt.method.mean(meth,"HEXACO_co.mean", hexaco.co)->meth
+adapt.method.mean(meth,"HEXACO_op.mean", hexaco.op)->meth
+```
+
+#### C2.3 adapted T2-T9 models
+At T2-T9, the VAS, STAI State, PANAS questionnaires are collected. 
+There is no total score for the VAS items, so only imputation methods for STAI State ...
+```{r adapt imputation method STAI-S}
+for(i in 1:9){
+  grep(paste0("StaiSt",i,"__*"), x = names(df_clean), value = TRUE) %>%
+    paste0(., collapse = " + ") -> this.stait_string
+  meth[paste0("STAIS_Total_",i)]<-paste0("~ I(",this.stait_string,")")
+}
+# meth["STAIS_Total_4"] # for checking
+```
+.. and PANAS were adapted (using a for-loop).
+```{r adapt imputation method PANAS}
+for(i in 1:9){
+  grep(paste0(i,'__A|',i,'__C|', i,'__E|',i,'__I|',i,'__J|', i,'__L|',i,'__N|',i,'__P|',i,'__Q|',i,'__S' ), panas.items,value = T) %>%
+    paste0(., collapse = " + ")-> this.pos.string
+  meth[paste0("PANAS_",i,"_PosA")]<-paste0("~ I(",this.pos.string,")")
+  
+  grep(paste0(i,'__B|',i,'__D|',i,'__F|',i,'__G|',i,'__H|',i,'__K|',i,'__M|',i,'__O|',i,'__R|',i,'__T') , panas.items,value = T) %>%
+    paste0(., collapse = " + ")-> this.neg.string
+  meth[paste0("PANAS_",i,"_NegA")]<-paste0("~ I(",this.neg.string,")")
+}
+# meth[paste0("PANAS_8_NegA")] # for checking
+```
+
+#### C2.4 adapted memory models
+The CMT scores are not imputed. Because the subjects with missing values in the CMT did not perform the CMT, and therefore there is no information available on their neutral/emotional memory performance.
+The imputation method for these variables is set to empty. Also see: https://rpubs.com/kaz_yos/mice-exclude
+```{r update method memory scores}
+meth["neutral.memory"]<-""
+meth["emotional.memory"]<-""
+```
+
+Finally, the imputation method of the FPS responses in the FGT is adapted, to preserve the relation between the FPS response and the composed fear learning and fear memory scores.
+
+```{r update method fear scores}
+adapt.method.mean(meth,"mean.threat.acq", grep(pattern = "sA_Cue_Smag_T", x = names(df_clean), value = TRUE, fixed=T) )->meth
+adapt.method.mean(meth,"mean.safe.acq", grep(pattern = "sA_Cue_Smag_S", x = names(df_clean), value = TRUE, fixed=T) )->meth
+
+adapt.method.mean(meth,"mean.threat", grep(pattern = "sG_Cue_Smag_T", x = names(df_clean), value = TRUE, fixed=T) )->meth
+adapt.method.mean(meth,"mean.safe", grep(pattern = "sG_Cue_Smag_S", x = names(df_clean), value = TRUE, fixed=T) )->meth
+adapt.method.mean(meth,"mean.new", grep(pattern = "sG_Cue_Smag_N", x = names(df_clean), value = TRUE, fixed=T) )->meth
+
+meth["fear.learning"]<-"~I(mean.threat.acq - mean.safe.acq)"
+meth["fear.memory"]<-"~I(-( (mean.new-mean.safe) / mean.threat ))"
+```
+
+#### C2.5 export models
+The final methods are exported to a CSV file for alter reference.
+```{r export methods}
+# View(meth)
+write.csv2(meth, "results/pas.imp.meth.csv")
+```
+
+
+## C3. Predictors and the Predictor Matrix
+- "In order to reduce the number of variables in the imputation model, all *separate item scores of a scale with missing item scores and the total scores of other scales are used as predictors to impute the missing item scores of that scale*" in passive imputation (Eekhout, 2018). 
+- So, for the passive imputation (MI-Passive) procedure in Eekhout (2018), the imputation model consisted of the following variables the item variables of a scale assessed at baseline, the item variables from the *same scale assessed at follow-up* and the *total scores of other scales at both time-points*" (Eekhout, 2018).
+- In the **SAM study**, questionnaires about Personality & Life Events & Symptoms are collected at T0 (STAIT, VTCI, SCL, HEXACO, CTQ, LSC.) and questionnaires about emotional arousal were collected from T1 onward (2 VAS scales the STAIS and PANAS).
+- Within the mice algorithm, a predictor matrix is used to indicate which variables are predictors of the to-be-imputed variables. 
+
+#### C3.1 Inital predictor matrix
+First an initial (empty) predictor matrix is created.
+```{r initial predictor matrix}
+predictorMatrix <- matrix(0, ncol = length(df.pas.imp), nrow = length(df.pas.imp)) # all 0's
+rownames(predictorMatrix) <- colnames(df.pas.imp) # with variable names from df.pas.imp as row & col names
+colnames(predictorMatrix) <- colnames(df.pas.imp)
+#View(predictorMatrix)
+```
+
+#### C3.2 Predictors T0
+Subsequently, the predictors for each scale are collected in a character vector and added to the initial predictor matrix.
+NOTE, JTV & SCL subscales were never included as predictors (otherwise too many variables as predictors in MICE).
+
+The **covariates** age, weight & height (for BMI) are imputed by all T0 (total scores), STAI State and panas total scores.
+```{r predictors covariates}
+predictorMatrix[c("age", "gewicht", "lengte"), c("Condition","BMI", all.t0.nosub, all.stais.total, all.panas.total, outcomes)]<-1
+predictorMatrix[c("gewicht", "lengte"), c("BMI")] <- 0 # except for height & weight (to avoid circularity in the model (formula bmi in passive imputation))
+```
+The **SCL items** are imputed by the covariates, other SCL items, all other TO total scores and the outcomes (fear memory measures). The **total SCL score**  is imputed by the SCL items (via passive imputation, as defined in the adapted method).
+```{r predictors SCL}
+pred_scl<-c(covars, scl_items, all.t0.nosub[!grepl("SCL",all.t0.nosub)], outcomes)
+# length(pred_scl)
+predictorMatrix[scl_items, pred_scl]<-1 # The predictors for the SCL items are added in the predictors matrix
+predictorMatrix[c("SCL_total", scl.subscales), scl_items]<-1# ... AND (for passive imputation import) the SCL items are added as predictors for the SCL total score
+```
+The **JTV items** are imputed by the covariates, other JTV items, all other TO total scores and the outcomes (fear memory measures). The **total JTV score** is imputed by the JTV items (via passive imputation, as defined in the adapted method).
+```{r predictors JTV}
+pred_jtv<-c(covars, jtv_items, all.t0.nosub[!grepl("JTV",all.t0.nosub)], outcomes) 
+# length(pred_jtv)
+predictorMatrix[jtv_items, pred_jtv]<-1
+predictorMatrix[c("JTV_total", jtv.subscales),jtv_items]<-1
+```
+Note, there are no missing values in the JTV
+
+The **LSCR items** are imputed by the covariates, other LSCR items, all other TO total scores and the outcomes (fear memory measures). The **total LSCR score** is imputed by the LSCR items (via passive imputation, as defined in the adapted method).
+```{r predictors LSC}
+pred_LSC<-c(covars, lsc_items, all.t0.nosub[!grepl("LSC",all.t0.nosub)], outcomes)
+# length(pred_LSC)
+predictorMatrix[lsc_items, pred_LSC] <-1
+predictorMatrix["LSC_event_total",lsc_items]<-1
+```
+Note, there are no missing values in the LSCR 
+
+The **STAI Trait items** are imputed by the covariates, other STAI-T items, all other TO total scores and the outcomes (fear memory measures). The **total STAI-T score** is imputed by the STAI-T items (via passive imputation, as defined in the adapted method).
+```{r predictors STAI-T}
+pred_stait<-c(covars, stait_items, all.t0.nosub[!grepl("STAI_T",all.t0.nosub)], outcomes)
+# length(pred_stait)
+predictorMatrix[stait_items, pred_stait]<-1
+predictorMatrix["STAI_T_total",stait_items]<-1
+```
+The **HEXACO items** are imputed by the covariates, other HEXACO items, all other TO total scores and the outcomes (fear memory measures).The **HEXACO subscales scores** is imputed by the HEXACO items (via passive imputation, as defined in the adapted method).
+```{r predictors HEXACO}
+pred_hexaco<-c(covars, hexaco_items, all.t0.nosub[!grepl("HEXACO",all.t0.nosub)], outcomes)
+# length(pred_hexaco)
+predictorMatrix[hexaco_items, pred_hexaco]<-1
+predictorMatrix[hexaco.subscales,hexaco_items]<-1
+```
+The **VTCI items** are imputed by the covariates, other VTCI items, all other TO total scores and the outcomes (fear memory measures). The **VTCI subscale scores** is imputed by the VTCI items (via passive imputation, as defined in the adapted method).
+```{r predictors VTCI}
+pred_vtci<-c(covars, vtci_items, all.t0.nosub[!grepl("VTCI|HEXACO",all.t0.nosub)], outcomes)
+# length(pred_vtci) 
+predictorMatrix[vtci_items, pred_vtci]<-1 
+predictorMatrix[vtci.subscales,vtci_items]<-1
+```
+
+### C3.3 Predictors T2-9
+The **VAS items** are imputed by the covariates, other VAS items, all other TO total scores, all PANAS and STAI-S scores, cortisol levels and the outcomes (fear memory measures).
+```{r predictors VAS}
+pred_vas.a<-c(covars, VAS.A.items, all.t0.nosub, all.panas.total, all.stais.total, cort.items, outcomes )
+pred_vas.b<-c(covars, VAS.B.items,all.t0.nosub,all.panas.total, all.stais.total, cort.items, outcomes )
+predictorMatrix[VAS.A.items, pred_vas.a]<-1 
+predictorMatrix[VAS.B.items, pred_vas.b]<-1 
+# note because there is no VAS total score, meth(vas) is not adjusted..
+```
+
+The **STAI State items** are imputed by the covariates, other STAIS items (of that timepoint), all other TO total scores, all PANAS scores, cortisol levels and the outcomes (fear memory measures). The **STAI_S total score** of that timepoint is imputed by the STAI-S items (of that timepoint; via passive imputation, as defined in the adapted method).
+```{r predictors STAI state}
+# create item vectors per timepoint for in prediction matrices
+for(i in 1:9){
+  # assign(x,value)
+  grep(paste0('StaiSt',i) , stais.items,value = T) -> this.stais.items
+  #predictors for items stais (per timepoint)
+  predictorMatrix[this.stais.items, c(this.stais.items, covars, all.panas.total, cort.items, all.stais.total[-i], outcomes)] <-1 
+  #predictors for total score
+  predictorMatrix[all.stais.total[i],this.stais.items]<-1
+}
+```
+
+The **PANAS positive/negative items** are imputed by the covariates, other positive/negative PANAS items (of that timepoint), all other TO total scores, all STAI-S scores, cortisol levels and the outcomes (fear memory measures). The **PANAS positive/negative subscale scores** of that timepoint is imputed by the PANAS positive/negative items (of that timepoint; via passive imputation, as defined in the adapted method).
+
+```{r predictors PANAS}
+for(i in 1:9){
+  # predictors for positive items
+  grep(paste0('(',i,'_.*(_A|_C|_E|_I|_J|_L|_N|_P|_Q|_S))') , panas.items,value = T) -> this.panas.pos.items
+  predictorMatrix[this.panas.pos.items, c(this.panas.pos.items, covars, cort.items, all.stais.total , panas.pos.total[-i], outcomes)] <-1 
+  # negative items
+  grep(paste0('(',i,'_.*(_B|_D|_F|_G|_H|_K|_M|_O|_R|_T))') , panas.items,value = T) -> this.panas.neg.items
+  predictorMatrix[this.panas.neg.items, c(this.panas.neg.items, covars, cort.items, all.stais.total, panas.neg.total[-i], outcomes)] <-1 
+  # predictors for total scores
+  predictorMatrix[panas.pos.total[i],this.panas.pos.items]<-1
+  predictorMatrix[panas.neg.total[i],this.panas.neg.items]<-1
+}
+#for checking
+# predictorMatrix[this.panas.pos.items,panas.pos.total[-i]]
+```
+#### C3.4 Predictors Endocrine levels
+The **Endocrine measures** (sAA and cortisol) are imputed by the covariates, all TO total scores, other sAA and cortisol levels and the outcomes (fear memory measures). 
+```{r predictors endocrine measures}
+pred.endo<-c(covars, all.t0.nosub, 
+             cort.items, sAA.items,
+             all.stais.total,
+             outcomes)
+# length(pred.endo)
+predictorMatrix[c(cort.items, sAA.items), pred.endo]<-1
+```
+
+#### C3.5 Predictors Memory scores
+The **neutral and emotional memory scores** (CMT) are not imputed.
+
+The **fear memory items** (FGT) are imputed by the covariates, all TO total scores, cortisol levels and other fear items. Note the model is circular if sAA levels are also included as predictors (high correlation with cortisol?)
+```{r predictors FGT items}
+pred.fear.items<-c(covars, all.t0.nosub,
+                   cort.items,
+                   fear.items)
+# length(pred.fear.items)
+predictorMatrix[fear.items, pred.fear.items]<-1
+```
+The **fear scores** are is imputed by the fear items (via passive imputation, as defined in the adapted method). 
+```{r predictors FGT scores}
+predictorMatrix[fear.scores, fear.items]<-1
+# remove circularity fear measure predictors: fear scores are NO predictors of fear items. NOTE: this code is probably redundant, as it is not specified that the fear scores are a predictor of fear items above 
+predictorMatrix[fear.items, fear.scores]<-0
+```
+
+After all the modifications to the predictor matrix, the predictor matrix diagonal is set to 0 (as variables can not be their own predictor).
+```{r predictor diagonal update}
+diag(predictorMatrix)<-0
+# View(predictorMatrix)
+# write.csv2(predictorMatrix,"pred.matrix.pas.imp.csv")
+```
+
+
+# C Final Imputation
+The questionnaire total scores and the questionnaire-item/endocrine/memory scores are imputed using MICE separately. For both imputations, the settings are: m=10, maxit=15. Various imputation parameters (m=5-20 and maxit=10-15) were checked during the process.
+```{r imputation settings}
+M=10
+MAXIT=15
+```
+Missing value pattern of the total scores is (close to) monotone (see https://stefvanbuuren.name/fimd/missing-data-pattern.html for interpretation). It is likely that the same is true for the item scores (i.e. subjects with all questionnaire items missing)
+```{r rms pattern}
+md.pattern(df_TS_imp) ->md.pat.ts
+# md.pattern(df.pas.imp, plot = F) -> md.pat.ps # Not visible (too many variables)
+```
+
+## C1. Direct Imputation
+The SCL and JTV subscales are not included as predictors, if they are included MICE automatically excludes the SCL and JTV total scores from the imputations.
+```{r imputation total scores}
+# readRDS("processed_data/impTS.rds")->impTS
+impTS <- mice(df_TS_imp, pred = predictorMatrix.scores, m=M , maxit=MAXIT,  seed=23456, visit = "monotone")
+saveRDS(impTS,"processed_data/impTS.new.rds") #save mids object
+impTS$loggedEvents  
+```
+
+## C2. Passive Imputation
+```{r passive imputation}
+# readRDS('processed_data/pas.imp.rds')->pas.imp
+pas.imp <- mice(df.pas.imp, meth=meth, pred=predictorMatrix, m=M,  maxit=MAXIT, seed=23456, visit = "monotone")
+# save mids object passive imputation
+saveRDS(pas.imp,"processed_data/pas.imp.new.rds")
+
+# logged events (all in console)
+# pas.imp$loggedEvents
+# for rstudio (better layout)
+# View(pas.imp[["loggedEvents"]])
+
+# only logged events imputation 3 in output (same for all imputations)
+pas.imp$loggedEvents %>% filter(im == 3)
+```
+Logged events show which variables were excluded as predictors during imputation (this is not a problem).
+
+
+# D. Quality direct imputation
+The quality of the imputations can be checked by checking **convergence** in the iterations plots (with plot(mids)). "On convergence, the different streams should be freely intermingled with each other, without showing any definite trends. Convergence is diagnosed when the variance between different sequences is no larger than the variance with each individual sequence. " [van buuren, 2011] (DOI 10.1177/0962280206074463); [Vink & van Buuren]([https://www.gerkovink.com/miceVignettes/Convergence_pooling/Convergence_and_pooling.html) or [van buuren](https://stefvanbuuren.name/fimd/sec-diagnostics.html)
+
+## D1. Quality direct imputation 
+#### Iterations
+Questionnaire total and subscale scores.
+```{r iterations direct imputation}
+plot(impTS)
+```
+> The iteration plots look good. Note, if there is only 1 missing value in a variable (no SD is shown in the iteration plots)
+
+#### Density / Distribution
+The Box-wisker plots look ok, but the density-plots not. Because only some values from this dataset will be used (only if >70% missing)), iterations are more important then the density plots of the total distribution (in this dataset).
+
+```{r densityplots direct imputation}
+densityplot(impTS)
+bwplot(impTS)
+bwplot(impTS, SCL_total)
+densityplot(impTS, .imp~SCL_total)
+complete(impTS, "long", T)->df.TS_long
+# warnings() #haven related
+sum(is.na(df.TS_long$SCL_total)) # only 2 missing values
+sum(is.na(df.TS_long$STAI_T_total))
+```
+For SCL and STAIS: This can also be due to the fact that there are only 2 missing values in the data. 
+
+```{r distribution total score per direct imputation}
+par(mfrow = c(1, 3))
+plot(df.TS_long$.imp, df.TS_long$SCL_total, main = "all datapoints per imputation", xlab = "imputation (0=raw)", ylab = "scl total") 
+plot(df.TS_long$.imp, df.TS_long$STAI_T_total, main = "all datapoints per imputation", xlab = "imputation (0=raw)", ylab="stai t total")
+plot(df.TS_long$.imp, df.TS_long$fear.memory, main = "all datapoints per imputation", xlab = "imputation (0=raw)", ylab="fear memory")
+```
+> If the total distrubution of imputed and non-imputed values in compared, no extreme diviations from the raw data (= imputation 0) are present.
+
+## D2. Quality passive imputation
+### D 2.1 Iterations
+Check iterations from measures that will be used in subsequent analysis ( questionnaire total scores & subscales, endocrine levels and memory scores)
+```{r iterations passive imputation questionnaire T0}
+plot(pas.imp,all.t0.total[!grepl("JTV_t|LSC_e|JTV_P|JTV_E|JTV_SA",all.t0.total)])
+```
+> There are no missing values in the JTV total score and subscales. The Iterations for other T0 questionnaires are OK.
+
+```{r iterations passive imputation questionnaire T2-T9}
+plot(pas.imp,c(VAS.A.items, VAS.B.items))
+plot(pas.imp,all.stais.total)
+plot(pas.imp,all.panas.total)
+```
+> The iterations VAS items, STAI-S and PANAS are OK.
+
+```{r iterations passive imputation endocrine levels}
+plot(pas.imp,sAA.items[!grepl("_02|_03|_04|_05|_06",sAA.items)])
+plot(pas.imp,cort.items[!grepl("_02|_03|_04|_05|_06",cort.items)])
+```
+Only missing values from sample 07 onward (all subsequent timpoints contain at least 1 missing value, because subject 058 stopped from here onward). Note, subject 058 is not the only one with missing values. 
+>The iterations for these endocrine measures are OK.
+
+```{r iterations passive imputation memory scores}
+plot(pas.imp,c(outcomes))
+```
+> The iterations of the fear memory measures are OK.
+
+
+### D2.2 Density/BW plots
+Because of the large number of variables, plots for quality check need to be checked in subsets of the mids object. A function is created to subset mids objects.
+```{r subset mids function}
+select.mids<-function(mids, vars, predictorMatrix, pattern.name){
+  #change mids to dataframe
+  data_mids.long <- complete(mids, action = "long", include = T)
+  # Perform manipulations:
+  which(rowSums(predictorMatrix ==1)>0)->imputed
+  # pattern or name?
+  if(pattern.name == "p"){
+    grep(vars, names(imputed), value = T)->selected
+  } else if (pattern.name =="n"){
+    vars -> selected
+  }
+  data_mids.long.modified <- data_mids.long[,c(".imp", selected)]
+  # Back to mids.
+  data_mids.modified <- as.mids(data_mids.long.modified)
+  return(data_mids.modified)
+}
+```
+
+#### D2.1 Questionnaire scores
+
+##### T0
+**T0 Total scores**
+```{r BW-plots passive imputation T0 questionnaires}
+select.mids(pas.imp, "STAI_T_total|JTV_total|SCL_total|LSC_event_total",predictorMatrix, "p")%>% bwplot()
+```
+> 1) There are no missing values in JTV & LSC. 2) The imputed SCL total score appear higher then the raw scores 3) Also the imputed STAI-T scores are a bit higher then the raw scores
+
+```{r bw plots SCL problem}
+bwplot(pas.imp, SCL_total, main='passive imputation')
+bwplot(impTS, SCL_total, main="direct imputation")
+densityplot(impTS, .imp~SCL_total, main="impTS")
+densityplot(pas.imp, .imp~SCL_total, main="pas.imp") 
+```
+> SCL: The bw-plot is better in the direct imputation. Both density plots reveal problems
+
+```{r bw plots stait problem}
+bwplot(pas.imp, STAI_T_total, main="passsive imputation")
+bwplot(impTS, STAI_T_total, main="direct imputation") 
+```
+> Stai-T: The bw-plot is better in the direct imputation.
+
+The differences in the graphs could be due to the limited number of missing values (~2). To investigate this, the total distribution of scores (imputed & raw) for each imputation is plotted:
+```{r plot passive imputation T0 questionnaires}
+complete(pas.imp, "long", T)->df_long
+# warnings() #haven related
+sum(is.na(df.pas.imp$SCL_total)) # 2 missings...
+sum(is.na(df.pas.imp$STAI_T_total))
+par(mfrow = c(1, 3))
+plot(df_long$.imp, df_long$SCL_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+plot(df_long$.imp, df_long$STAI_T_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)") 
+plot(df_long$.imp, df_long$fear.memory, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+```
+> These plots show no deviations from imputatoin 0 (= raw data). Therefore the imputation quality is considerd OK.
+
+
+**SCL subscales**
+```{r BW-plots passive imputation T0 questionnaires: SCL subscales}
+select.mids(pas.imp, scl.subscales, predictorMatrix, "n")%>% bwplot()
+par(mfrow = c(1, 2))
+plot(df_long$.imp, df_long$SCL_SOM_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+plot(df_long$.imp, df_long$SCL_ANX_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+```
+> In BW-plots, imputed values are higher then raw valuws. However the distribution of the imputed and raw data together is comparable. Therefore the imputation quality is considerd OK.
+
+**CTQ subscales**
+```{r BW-plots passive imputation T0 questionnaires: jtv subscales}
+select.mids(pas.imp, jtv.subscales, predictorMatrix, "n")%>% bwplot(.,main="CTQ subscale", xlab = "imputation # (0=raw)")
+```
+> There were no missing values in the CTQ.
+
+**VTCI subscales**
+```{r BW-plots passive imputation T0 questionnaires: vtci subscales}
+select.mids(pas.imp, vtci.subscales, predictorMatrix, "n")%>% bwplot(.,main="vtci subscale")
+par(mfrow = c(1, 3))
+plot(df_long$.imp, df_long$VTCI_SD_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+plot(df_long$.imp, df_long$VTCI_CO_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+plot(df_long$.imp, df_long$VTCI_HA_total, main = "all datapoints per imputation", xlab = "imputation # (0=raw)")
+```
+> The VTCI subscales are OK, imputated values appear a bit higher then raw scores, but distrubution of raw and imputed values is comparable in each imputation. Thus quality is OK.
+
+**HEXACO subscales**
+```{r BW-plots passive imputation T0 questionnaires: hexaco subscales}
+select.mids(pas.imp, hexaco.subscales, predictorMatrix, "n")%>% bwplot()
+```
+> The BW-plots are OK
+
+
+##### T2-9
+The **VAS, PANAS, Stai-S** scores are OK Sometimes a bit high (VAS, stais), but no problems. Quality is considered OK.
+```{r BW-plots passive imputation T2-9 questionnaires}
+select.mids(pas.imp, "VAS",predictorMatrix,"p")%>% bwplot()
+select.mids(pas.imp, all.panas.total,predictorMatrix,"n")%>% bwplot()
+select.mids(pas.imp, all.stais.total ,predictorMatrix,"n")%>% bwplot()
+```
+
+
+#### D2.2 Endocrine levels
+```{r BW-plots passive imputation endocrine levels}
+select.mids(pas.imp, "sAA",pas.imp$predictorMatrix,"p")%>% bwplot()
+select.mids(pas.imp, "CORT",pas.imp$predictorMatrix,"p")%>% bwplot()
+# densityplot(pas.imp, .imp~sAA_07) # error
+# Note: The densityplot() function doesn't work on the sAA samples. The documentation states: "densityplot errs on empty groups, which occurs if all observations in the subgroup contain NA. The relevant error message is: Error in density.default: ... need at least 2 points to select a bandwidth automatically. There is yet no workaround for this problem. Use the more robust bwplot or stripplot as a replacement."
+```
+> The BW plots show that distribution of the imputed **sAA and cortisol** levels follows the original data.
+
+#### D2.3 Memory scores
+
+The **CMT** scores are not imputed. 
+```{r cmt scores, eval=FALSE, include=FALSE}
+# densityplot(pas.imp, .imp~neutral.memory)
+# densityplot(pas.imp, .imp~emotional.memory)
+
+# old notes:
+# The densityplots of the CMT memory scores, look a bit worse.. (m5,maxit15)
+# * better to increase m?
+# * M10, maxit15: gaat beter, maar netural memory 'te laag' en emotional memory 2 pieks.. in density plots (BW's zien er wat beter uit.. maar veel variatie..)
+```
+
+> The BW plots and the densityplots of the **fear scores** are OK.
+
+```{r BW-plots passive imputation fear memory scores}
+select.mids(pas.imp, "memory|learning",pas.imp$predictorMatrix,"p") %>% bwplot() 
+par(mfrow = c(1, 2))
+densityplot(pas.imp, .imp~fear.learning)
+densityplot(pas.imp, .imp~fear.memory)
+```
+
+
+## D3.Conclusion:
+> The imputation settings m=10 and maxit=15 give good quality imputations for endocrine and fear memory measures. The imputed questionnaire data is also ok, especially if direct and passive imputations will be combined (below)). The CMT scores were not imputed, because quality of imputations was not good (not shown) and futher analysis will be performed per outcome measure.
+
+https://stefvanbuuren.name/mice/reference/index.html
+good overview of mice functions
+
+# E. Combine imputations
+The values of the direct and passive imputation are combined (per imputation)
+```{r combine imputations}
+implist<-lapply(1:M, function(x){
+  
+  x.pas<-mice::complete(pas.imp, x)
+  x.total<-mice::complete(impTS,x)
+  
+  x.new<-x.pas
+  x.new$.imp<-x
+  
+  # If missing indices is 1, more then 70% missing
+  x.new$SCL_total<-ifelse(df_clean$scl.miss.index == 1, yes=x.total$SCL_total, no=x.pas$SCL_total) # if 1 then >70% missing, then 
+  
+  # imputed total score
+  # for checking:
+  # all.equal(x.total$SCL_total, x.pas$SCL_total)
+  # cbind(df_clean$scl.miss.index, x.total$SCL_total, x.pas$SCL_total)
+  
+  x.new$JTV_total<-ifelse(df_clean$jtv.miss.index == 1, x.total$JTV_total, x.pas$JTV_total)
+  x.new$LSC_event_total<-ifelse(df_clean$lsc.miss.index == 1, x.total$LSC_event_total, x.pas$LSC_event_total)
+  x.new$STAI_T_total<-ifelse(df_clean$stait.miss.index == 1, x.total$STAI_T_total, x.pas$STAI_T_total)
+  
+  
+  # if more then 70% of the hexaco items missing, then subscales from directly imputed mids
+  x.new$HEXACO_hh.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_hh.mean, x.pas$HEXACO_hh.mean)
+  x.new$HEXACO_emo.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_emo.mean, x.pas$HEXACO_emo.mean)
+  x.new$HEXACO_extr.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_extr.mean, x.pas$HEXACO_extr.mean)
+  x.new$HEXACO_ag.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_ag.mean, x.pas$HEXACO_ag.mean)
+  x.new$HEXACO_co.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_co.mean, x.pas$HEXACO_co.mean)
+  x.new$HEXACO_op.mean<-ifelse(df_clean$hexaco.miss.index == 1, x.total$HEXACO_op.mean, x.pas$HEXACO_op.mean)
+  
+  # if more then 70% of the VTCI items missing, then all subscales form directly imputed mids.
+  # vtci.subscales
+  x.new$VTCI_SD_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_SD_total, x.pas$VTCI_SD_total)
+  x.new$VTCI_NS_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_NS_total, x.pas$VTCI_NS_total)
+  x.new$VTCI_CO_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_CO_total, x.pas$VTCI_CO_total)
+  x.new$VTCI_HA_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_HA_total, x.pas$VTCI_HA_total)
+  x.new$VTCI_ST_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_ST_total, x.pas$VTCI_ST_total)
+  x.new$VTCI_RD_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_RD_total, x.pas$VTCI_RD_total)
+  x.new$VTCI_PS_total<-ifelse(df_clean$vtci.miss.index == 1, x.total$VTCI_PS_total, x.pas$VTCI_PS_total)
+  
+  for(i in 1:9){
+    #stais
+    x.new[,grepl(paste0("STAIS_Total_",i), x = names(x.new))]<- ifelse(df_clean[,grepl(paste0("stais",i,".miss.index"),names(df_clean))] == 1, x.total[,grepl(paste0("STAIS_Total_",i), x=names(x.total))], x.pas[,grepl(paste0("STAIS_Total_",i), x = names(x.pas))]) #-> this.stais.imp
+    # panas positive affect
+    x.new[,grepl(paste0("PANAS_",i,"_PosA"), x = names(x.new))]<- ifelse(df_clean[,grepl(paste0("panas.pos",i,".miss.index"),names(df_clean))] == 1, x.total[,grepl(paste0("PANAS_",i,"_PosA"), x=names(x.total))], x.pas[,grepl(paste0("PANAS_",i,"_PosA"), x = names(x.pas))]) #-> this.panas.pos.imp
+    # panas negative affect    
+    x.new[,grepl(paste0("PANAS_",i,"_NegA"), x = names(x.new))]<- ifelse(df_clean[,grepl(paste0("panas.neg",i,".miss.index"),names(df_clean))] == 1, x.total[,grepl(paste0("PANAS_",i,"_NegA"), x=names(x.total))], x.pas[,grepl(paste0("PANAS_",i,"_NegA"), x = names(x.pas))]) #-> this.panas.neg.imp
+  }
+  
+  # fear memory scores
+  x.new$fear.learning<-ifelse(df_clean$fear.learn.items == 1, x.total$fear.learning, x.pas$fear.learning)
+  x.new$fear.memory<-ifelse(df_clean$fear.memory.miss.index == 1, x.total$fear.memory, x.pas$fear.memory)
+  
+  
+  x.new
+})
+```
+
+The combined direct and passive imputation values are saved in a list
+```{r save imputations}
+saveRDS(implist, "processed_data/implist.rds")
+```

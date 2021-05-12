@@ -1,0 +1,258 @@
+---
+title: "SAMexplore variable reduction: AUC calculations"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+editor_options: 
+  chunk_output_type: console
+---
+
+# Background
+The aim of the SAM explore project is to explore the influence of the personality characteristics, life-event history, subjective and objective emotional/stress responsivity on context-dependency of neutral, emotional and fearful memories.
+
+Prior to the exploratory analysis, variables need to be reduced. In this script AUC are calculated for endocrine and self-report measures.
+The joined variables are combined in a dataframe at the end of the code
+
+# Data & Packages
+
+## Prepare workspace
+First r-packages are loaded.
+```{r setup, include=FALSE}
+# clear workspace
+rm(list=ls())
+library(dplyr)
+library(tidyr)
+library(kableExtra) #needed to scale tables to rmarkdown pdf
+```
+
+## Emotion/Stress Responsivity:
+Both endocrine (salivary Cortisol and sAA) and self-report (PANAS, STAI-S, VAS) measures are collected to represent emotional or stress responsivity during the experimental procedures. The imputed data is loaded.
+```{r load data}
+#load imputed data
+readRDS("processed_data/implist.rds")->implist
+# imputation settings
+M=10
+
+# # # load raw data and add to implist (to create dataset for descriptive tables)
+#  readRDS("processed_data/df_clean_for_MI.rds")->df_sam
+#  M=M+1
+#  implist[[11]]<-df_sam
+```
+
+## Experimental Timepoints
+The relative timepoints of the collected endocrine (via saliva samples) and self-report (via questionnaires) are in *"SAM_Timepoints_reactivity_measures.csv"*. (Note this file is also used for the timepoints in the plots of the MCT and FGT paper).
+```{r load timepoint matrix, message=FALSE, results='asis'}
+Timepoints <- readr::read_delim("data/SAM_Timepoints_reactivity_measures.csv", ";", escape_double = FALSE, trim_ws = TRUE, na= "-")
+# tibble(Timepoints)
+
+# for rmarkdown document
+knitr::kable(Timepoints, caption = "Collected data per timepoint in SAM study", "latex") %>%
+  kable_styling(latex_options = c( "scale_down"))
+```
+Note this table does not contain complete information about the MCT and FGT data
+
+## Timpoints & Data
+And information about the relative timepoints are added to the endocrine data. These timepoints are needed to calculate the time intervals between measurements
+
+### Merge timepoints information to Endocrine data
+```{r merge time and endocrine, warning=FALSE}
+# Create Endocrine Sample Time matrix, which contains the relative time in minutes of each sample with respect to encoding/retrieval
+Timepoints %>% 
+  filter(!is.na(Salivette_number)) %>% # Select only timepoints with saliva samples.
+  separate(., col=Salivette_number, into=c("Saliva", "Sample"), sep="_")  %>%
+  filter(Sample != "01") %>% # select only samples 2 t/m 14 (note sample 1 is extra baseline sample)
+  mutate(Sample = factor(Sample)) %>%# Change sample to 'factor', because the variable "sample" in Saliva_data_condition is also a factor. Need to be identical for "merge"
+  dplyr::rename(Time = time_to_memory_minutes, 
+                Day = experimental_day) %>%
+  select(Sample, Time, Day)  -> endocrine_sample_time_matrix # Select timepoint variables (that should be added to the endocrine dataset later)
+
+# Merge both datasets by 'Sample variable
+#endocrine_data2 <- merge(endocrine_data, endocrine_sample_time_matrix, by=c("Sample"))
+```
+
+#### Merge timepoints information to VAS data
+```{r merge time and vas, warning=FALSE}
+# select timepoints for vas
+Timepoints %>% 
+  filter(!is.na(netq_VAS_number)) %>% 
+  dplyr::rename( sample = netq_VAS_number,  # rename variables to align with vas_data set
+                 Time = time_from_baseline_minutes,
+                 Day = experimental_day) %>%  
+  select(sample, Time, Day) -> vas_sample_time_matrix   # select needed vars
+# vas_sample_time_matrix
+```
+
+#### Merge timepoints information to PANAS & STAI-State data
+Create a matrix with relevant timepoints from 'Timepoints" csv file
+```{r merge time and stais and panas}
+Timepoints %>% 
+  filter(!is.na(netq_PANAS_STAI_number)) %>% 
+  #rename to align col names in both matrices for merge
+  dplyr::rename(timepoint = netq_PANAS_STAI_number,
+                Time = time_from_baseline_minutes,
+                Day = experimental_day) %>%
+  select(timepoint, Time, Day) -> panas_stais_sample_time_matrix 
+# for checking
+# str(panas_stais_sample_time_matrix)
+```
+
+
+# AUC formula's
+[Pruessner, 2003](https://www.sciencedirect.com/science/article/pii/S0306453002001087#FD6) provide two formula's for the calculation of the ‘Area under the curve with respect to increase’ (AUCi) and ‘Area under the curve with respect to ground’ (AUCg) and reflect on the differences in meaning between these formula's.
+-*The information needed in order to calculate the formula consists of the measurements themselves (m) and the time distance between the measurements (t)*
+
+[Khoury, 2015](https://www.sciencedirect.com/science/article/pii/S2352289515000272) confirm that the AUCi and AUCg represent different aspects of the stress response (not based on cortisol!). They also provide information on the interpretation AUCg and AUCi and the rationale behind the selection of these two sumscores.
+
+The formula from Pruessner, et al (2003) for the __AUCg__ is $AUCg = ( ( (m2 + m1)*t1 )/2 ) + ( ( (m3 + m2)*t2 )/2 ) + ( ( (m4 + m3)*t3 )/2 ) + ( ( (m5 + m4)*t4 )/2 ) + ( ( (m6 + m5)*t5 )/2 ) + etc.$ In which m1 to m6 denote the single measurements, and t1 to t5 denote the time interval between the measurements.
+
+This formula is transformed into $AUCg = SUM( ( (m[i+1] + m[i])*t[i] )/2 )$ and used in a for-loop.
+
+The formula for the __AUCi__ can be derived from the formula for AUCG, since it is identical to AUCG except for the removal of the area between ground and the first measure (baseline) for all time points (Pruessner, 2003): $AUCi = AUCg - (m[1] * SUM(time.intervals))$
+
+```{r AUC formula}
+AUC_formula <- function(m,t){
+  # With this formula the AUCg and AUCi can be calculated according to Pruessner, 2003 
+  
+  # 1) calculate time intervals
+  t_int=diff(t) # diff is used to calculated intervals between the timepoints
+  # 2) Calculate AUC pre interval
+  list_AUC<-list()
+  for(i in 1:(length(t_int))){
+    ( ( (m[i+1] + m[i]) * t_int[i] ) / 2) -> list_AUC[[i]]
+  }
+  # 3) change list to vector
+  unlist(list_AUC)->vector_AUC
+  # 4) AUCg: sum AUCs per interval
+  sum(vector_AUC, na.rm = F)->AUCg
+  # AUCi: remove area between ground and the first measurement (m1), for all timepoints (=sum(time_intervals) from AUCg (Pruessner, 2003).
+  # 5) calculate baseline:
+  baseline = m[1] * sum(t_int) 
+  # 6) substract baseline from AUCg
+  AUCi<- AUCg - baseline 
+  # 7) Collect AUCg and AUCi variables
+  out<-list(AUCg, AUCi)
+  # 8) return output
+  return(out)
+}
+```
+
+Notes:
+
+- the area under the curve is calculated for day 1 and 2 separately
+- an extreme outlier in the cortisol data excluded (high levels due to medication use, also excluded in MCT en FGT analyses)
+- NOTE The AUCi can result in negative values, reflecting stronger decrease than increase over time. Pruessner, et al *suggest to continue the statistical analysis even with negative values, but in these cases the result must be regarded AUCG,as an ‘index of decrease’ rather than an area. This is no consideration for the AUCG ,since the reference to zero results in a true area in all cases*.
+- code to explore individual cortisol levels at all timepoints during the experiment currently inactive (zorgt voor vertraging bij runnen code)
+
+### Endocrine data: salivary cortisol and Alpha-amylase
+Saliva samples are collected on day 1 (when learning occurred) and day 2 (when memory was tested).
+On day one, 12 saliva samples were collected. So there are M1 to M12 samples, and T1 to T11 time intervals. 
+```{r AUC endocrine, warning=FALSE}
+implist2<-lapply(1:M, function(x){
+  #get dataframe
+   implist[[x]]->x.new
+  # AUC cort/sAA
+  x.new %>% select(subject, Condition, grep("sAA|CORT", names(.), value = T)) %>%
+    pivot_longer(., cols= grep("sAA|CORT", names(.), value = T), names_to = c("measure", "Sample"), values_to = "endocrine", names_sep = "_") %>%
+    merge(., endocrine_sample_time_matrix, by=c("Sample")) %>% 
+    dplyr::group_by(Day, measure, subject) %>% # group by day, measure (cortisol & saa), subject
+    dplyr::summarize(AUCg=AUC_formula(endocrine, Time)[[1]],
+                     AUCi=AUC_formula(endocrine, Time)[[2]]) -> endocrine_data
+  # change back to wide
+  endocrine_data %>% 
+    pivot_wider(id_cols = c( subject), names_from = c(measure, Day), values_from = c(AUCg, AUCi)) -> endocrine_data2
+  # merge AUC values to dataframe
+  full_join(x.new,endocrine_data2)->x.new2
+})
+```
+
+### Self-report
+**"Emotional State"**: STAI & PANAS (both 9x); VAS scales (11x)  
+
+#### VAS-scales A and B
+"Hoe voelt u zich op dit moment"?
+- VasA: Helemaal niet gespannen -- helemaal wel gespannen
+- VASb: postief - negatief
+
+Calculate AUCg and AUCi VAS scales for d1 and d2 separately. On day1, 8 VAS-scales are collected, on day2, 3 VAS-scales are collected
+```{r AUC VAS}
+implist3<-lapply(1:M, function(x){
+  implist2[[x]]->x.new
+  # Collect VAS names per subscale
+  x.new %>% select(subject, Condition, grep("VAS", names(.), value = T)) %>%
+    pivot_longer(., cols= grep("VAS", names(.), value = T), names_to = c("measure", "sample", "subscale"), values_to = "VAS", names_sep=c(3,5)) %>%
+    mutate( sample= as.numeric(stringr::str_remove(sample, "_")), # remove additional _ from sample code; then change sample to numeric to align with timepoints data
+            subscale= dplyr::recode(subscale, "A" = "anxiety", "B" = "mood", # for samples 1-9
+                                    "_A" = "anxiety", "_B" = "mood" # note: needed for samples 10 and 11
+            )) %>%
+    merge(., vas_sample_time_matrix, by=c("sample"))  %>%
+    dplyr::group_by(Day, subscale, subject) %>% # group by day, measure (cort & saa), subject
+    dplyr::summarize(AUCg_VAS=AUC_formula(VAS, Time)[[1]],
+                     AUCi_VAS=AUC_formula(VAS, Time)[[2]]) -> vas_data
+  # change back to wide
+  vas_data %>%
+    pivot_wider(id_cols = c(subject), names_from = c(subscale, Day), values_from = c(AUCg_VAS, AUCi_VAS)) -> vas_data2
+  # head(vas_long4)
+  
+  # #for checking
+  # vas_data3 %>% filter(subject == "002" & Day == 2) #  all items 1 -> so AUCi 0 is correct and AUCg is the sum of the intervals between the 3 timepoints (also correct) 
+  # diff(c(1680, 1710 ,1740)) # diff, timepoints d2, together 60
+  # vas_data3 %>% filter(subject == "004") # almost all answers 1
+  
+  # merge auc values to dataframe
+  full_join(x.new,vas_data2)->x.new2
+})
+```
+
+#### STAI-State
+```{r AUC STAIS-S, warning=FALSE}
+# x=2
+implist4<-lapply(1:M, function(x){
+  implist3[[x]]->x.new
+  # Collect vas names per subscale
+  x.new %>% select(subject, Condition, grep("STAIS_", names(.), value = T)) %>%
+    pivot_longer(., cols= grep("STAIS_", names(.), value = T), names_to = c("measure1", "measure2", "timepoint"), values_to = "value", names_sep="_") %>%
+    merge(., panas_stais_sample_time_matrix, by=c("timepoint"))  %>% 
+    filter(measure2 == "Total") %>% # select only total scores
+    mutate(value=as.numeric(value)) %>%  # value is currently character.... needs to be numeric for auc formula below
+    dplyr::group_by(Day, subject) %>% 
+    dplyr::summarize(AUCg_stais=AUC_formula(value, Time)[[1]],
+                     AUCi_stais=AUC_formula(value, Time)[[2]]) ->stais_auc
+  # to wide format
+  stais_auc %>%
+    pivot_wider(id_cols = c(subject), names_from = c( Day), values_from = c(AUCg_stais, AUCi_stais)) -> stais_auc2
+  # merge auc values to dataframe
+  full_join(x.new,stais_auc2)->x.new2 
+})
+# View(implist4[[1]])
+```
+
+#### PANAS
+```{r AUC PANAS, warning=FALSE}
+implist5<-lapply(1:M, function(x){
+  implist4[[x]]->x.new
+  # Collect vas names per subscale
+  x.new %>% select(subject, Condition, grep("PANAS_", names(.), value = T)) %>%
+    pivot_longer(., cols= grep("PANAS_", names(.), value = T), names_to = c("measure", "timepoint", "subscale"), values_to = "value", names_sep="_") %>%
+    merge(., panas_stais_sample_time_matrix, by=c("timepoint")) %>% #  mutate(value=as.numeric(value)) %>%  # value is currently character.... needs to be numeric for auc formula below
+    dplyr::group_by(Day, subscale, subject) %>% 
+    dplyr::summarize(AUCg_panas=AUC_formula(value, Time)[[1]],
+                     AUCi_panas=AUC_formula(value, Time)[[2]]) ->panas_auc
+  # to wide
+  panas_auc %>%
+    pivot_wider(id_cols = c(subject), names_from = c(subscale, Day), values_from = c(AUCg_panas, AUCi_panas)) -> panas_auc2# to wide format
+  # merge auc values to dataframe
+  full_join(x.new,panas_auc2)->x.new2 
+})
+# View(implist5[[1]])
+```
+
+## Save
+```{r save AUC reduced variables}
+saveRDS(implist5, "processed_data/SAMimputed_with.AUC.variables.RDS")
+# saveRDS(implist5, "processed_data/SAMimputed.andRAW_with.AUC.variables.RDS")
+```

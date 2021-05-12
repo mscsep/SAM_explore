@@ -1,0 +1,1132 @@
+---
+title: "Calculate sumscaores netq questionnaire data from SAM project"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+[rmarkdowninfo](https://rstudio.com/wp-content/uploads/2015/02/rmarkdown-cheatsheet.pdf)
+
+This code is used to pre-process and summarize the questionnaire data from the SAM project. Collected questionnaires in SAM:
+
+* **Personality & Life Events & Symptoms**:  STAIT, VTCI, SCL, HEXACO, CTQ, LSC, 
+* **"Emotional State"**: STAI & PANAS (both 9x); VAS scales (11x)  
+* **Learning and Memory**: MCT & FGT related task questions  
+
+# Part I. Preparations: Add data from other files: task related variabels
+The questionnaire data was collected via NETQ in the SAM study. The data was exported from NETQ to an SPSS file.
+```{r Prepare workspace, echo=TRUE}
+rm(list=ls())
+# load packages
+library(haven) # to download SPSS file in r
+library(dplyr) # For data manipulations
+library(arsenal) # for demographics tables. also see: https://thatdatatho.com/2018/08/20/easily-create-descriptive-summary-statistic-tables-r-studio/
+
+# Load document with functions that are needed for scoring
+source("R/SAM_netq_function_scoring.R")
+
+# load data
+SAM_netq <- read_sav("data/SAM Questionnaire Masterfile.sav") 
+
+na_if(SAM_netq, 9999999) -> SAM_netq # change SPSS missing value code to NA
+na_if(SAM_netq, 8888888) -> SAM_netq 
+na_if(SAM_netq, 7777777) -> SAM_netq  # not present?
+na_if(SAM_netq, ".") -> SAM_netq # change SPSS missing value code to NA
+na_if(SAM_netq, "") -> SAM_netq 
+
+# Used to check before and after NA mutations above (check which NA's are present)
+which(SAM_netq == 9999999) 
+which(SAM_netq == 8888888.00)
+which(SAM_netq == 7777777)
+which(SAM_netq == ".")
+# checked if adding .000 made a difference.. -> it doesn't
+```
+
+Load the dataset with performance in the Memory Contextualization Task (MCT), to select participants that completed the MCT task (1= completed)
+```{r MCT complete, echo=TRUE}
+MCT <- read.csv2("data/SAM_MCT.csv", na.strings = 'NA')
+SAM_netq$MCTcomplete <- ifelse(test = SAM_netq$SubjectNumber %in% MCT$subjName, yes= 1, no=0)
+rm(MCT)
+```
+
+Load the dataset with performance in the Fear Generalization Task (FGT), to select participants that complete the FGT task (1=completed). Note, there is also a SPSS file that indicates if participants recognized stimuli correct (could be added later)
+```{r FGT complete, echo=TRUE}
+FGT <- read.csv2("data/SAM_FGT.csv", na.strings = c("NaN","5555","8888","9999"))
+SAM_netq$FGTcomplete<- ifelse(test = SAM_netq$SubjectNumber %in% FGT$subjName, yes= 1, no=0)
+rm(FGT)
+```
+
+Add variables that indicate which version of the experimental protocol, The Memory Contextualization Task (MCT) and the Fear Generalization Task (FGT) the participants completed in the SAM study.
+```{r Versions, echo=TRUE}
+SAM_Versions <- read.csv2("data/SAM_Codes_Task_Protocol_Versions.csv")
+merge(SAM_netq, SAM_Versions, by="SubjectNumber") -> SAM_netq
+# rm(SAM_Versions)
+```
+
+
+# Part II. Demographics
+Analysis of: age BMI opleiding burgstat werksitu kinderen roken alcohol drugs nachtritme_verst Condition 
+
+```{r Variable Types and Labels, echo=TRUE}
+# set labels condition variable
+SAM_netq$Condition <- factor(SAM_netq$Condition, levels=c(3,2,1), labels =c("No-Stress", "Immediate-Stress", "Delayed-Stress"))
+# change variables to factor
+cols <- c("SubjectNumber", "opleiding", "burgstat", "werksitu", "kinderen", "roken", "alcohol", "drugs", "nachtritme_verst")
+# https://haven.tidyverse.org/reference/as_factor.html  # haven labeled to factor..
+# Use haven-package to change variables to factor
+as_factor(SAM_netq[cols], levels = c( "both"), ordered = T) -> SAM_netq[cols]
+# Add a label for "missing", to improve readability in tables.
+purrr::map(SAM_netq[c(cols, "Condition")], forcats::fct_explicit_na, na_level = "(Missing)") -> SAM_netq[c(cols,"Condition")]
+```
+
+Calculate BMI
+```{r BMI, echo=TRUE}
+SAM_netq %>% mutate(BMI=gewicht/(lengte/100)^2) -> SAM_netq  # NOTE length/100, because length is in cm in data
+```
+
+## Demographics MCT paper
+```{r Demographics MCT, echo=FALSE, results="asis"}
+#note: results="asis" needed to get nice tables from tableby in html/pdf output with knitr
+SAM_netq%>% filter(MCTcomplete == 1) -> SAM_MCT
+table_MCT <- tableby(Condition ~ age + BMI + opleiding + burgstat +werksitu +kinderen+ roken+ alcohol +drugs +nachtritme_verst , data = SAM_MCT, test=F)
+summary(table_MCT, title = "Demographics SAM MCT")
+```
+
+## Demographics FGT paper
+```{r Demographics FGT, echo=FALSE, results="asis"}
+SAM_netq%>% filter(FGTcomplete == 1) -> SAM_FGT
+table_FGT <- tableby(Condition ~ age+ BMI+opleiding +burgstat +werksitu +kinderen+ roken+ alcohol +drugs +nachtritme_verst , data = SAM_FGT, test=F)
+summary(table_FGT, title = "Demographics SAM FGT")
+```
+
+
+# Part III. Calculate sumscores questionnaires
+
+## Section 1 Symptoms: SCL90
+```{r SCL90 rename variables, include=FALSE}
+grep(pattern = "SCL", x = names(SAM_netq), value = TRUE) -> SCL_items
+#str(SAM_netq[SCL_items]) # correct numbers are in attribute labels.. The order is correct.( last item = item SCL90) 
+# rename items 
+paste("SCL", rep(1:90), sep = "_", collapse = NULL) -> new.SCL.names
+SAM_netq%>%
+  rename_at(vars(SCL_items), ~new.SCL.names) -> SAM_netq
+```
+
+The SCL90 __subscales__ are calculated according tot the dutch manual. Note, because the subscales cutoff scores have different levels per subscale (i.e. 0-1-2 and 0-1-2-3 and 0-1 etc.), these cutoff values are NOT calculated by the SAM scoring function. NOTE: Normgroep 2 (gewone bevolking)
+In clinical populations are sometimes also subscales Paranoid Ideation (PAR) and Psychoticism (PSY) calculated (see: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4946097/table/Tab3/?report=objectonly]), but these are not in the manual (and not calculated here (healthy population)).
+
+SOM - Somatization
+```{r SCL90 score Somatische subscale, echo=TRUE}
+Som_klachten=c("SCL_1", "SCL_4", "SCL_12", "SCL_27", "SCL_40", "SCL_42", "SCL_48", "SCL_49", "SCL_52", "SCL_53", "SCL_56", "SCL_58")
+sum_scoring_sam(df=SAM_netq, items=Som_klachten, outcome="SCL_SOM", miss_limit = 0) -> SAM_netq
+
+# make cutoff score (https://dplyr.tidyverse.org/reference/case_when.html)
+SAM_netq  %>% mutate(SCL_SOM_cutoff = case_when(
+  SCL_SOM_total == 12 ~ 0,
+  SCL_SOM_total >12 & SCL_SOM_total<15 ~ 1,
+  SCL_SOM_total >14 & SCL_SOM_total<19 ~ 2,
+  SCL_SOM_total == 19 ~ 3,
+  SCL_SOM_total >19 & SCL_SOM_total<27 ~ 4,
+  SCL_SOM_total >=27 ~ 5,
+)) ->SAM_netq
+
+SAM_netq$SCL_SOM_cutoff<- factor(SAM_netq$SCL_SOM_cutoff, 
+                                 levels = c(0,1,2,3,4,5), 
+                                 labels=c("very low - low","below average", "average", "above average", "high", "very high")) 
+
+hist(as.numeric(SAM_netq$SCL_SOM_cutoff))
+```
+
+O-C - Obsessive-Compulsive
+```{r SCL90 score Insufficientie subscale, echo=TRUE}
+# *Insufficiëntie van denken en handelen*
+Insufficientie_dh=c("SCL_9", "SCL_10", "SCL_28", "SCL_38", "SCL_45", "SCL_46", "SCL_55", "SCL_65", "SCL_71")
+sum_scoring_sam(df=SAM_netq, items=Insufficientie_dh, outcome="SCL_OC", miss_limit = 0) -> SAM_netq
+
+# make cutoff score
+SAM_netq  %>% mutate(SCL_OC_cutoff = case_when(
+  SCL_OC_total <= 10 ~ 0,
+  SCL_OC_total >10 & SCL_OC_total<15 ~ 1,
+  SCL_OC_total >14 & SCL_OC_total<21 ~ 2,
+  SCL_OC_total >= 21 ~ 3,
+)) ->SAM_netq
+
+SAM_netq$SCL_OC_cutoff<- factor(SAM_netq$SCL_OC_cutoff, 
+                                levels = c(0,1,2,3), 
+                                labels=c("very low - below avarage", "average", "above average - high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_OC_cutoff))
+```
+
+I-S - Interpersonal Sensitivity
+```{r SCL90 score Wantrouwen subscale, echo=TRUE}
+# *Wantrouwen en interpersoonlijke sensitiviteit*
+Sensitiviteit=c("SCL_6", "SCL_7", "SCL_8", "SCL_18", "SCL_21", "SCL_34", "SCL_35", "SCL_36", "SCL_37", "SCL_41", "SCL_43", "SCL_61", "SCL_68", "SCL_69", "SCL_73", "SCL_76", "SCL_83", "SCL_88")
+sum_scoring_sam(df=SAM_netq, items=Sensitiviteit, outcome="SCL_IS", miss_limit = 0) -> SAM_netq
+
+SAM_netq %>% mutate(SCL_IS_cutoff = 
+                      case_when(
+                        SCL_IS_total <=18 ~ 0,
+                        SCL_IS_total >18 & SCL_IS_total<22 ~ 1,
+                        SCL_IS_total >21 &  SCL_IS_total<27 ~ 2, 
+                        SCL_IS_total == 27 ~ 3,
+                        SCL_IS_total > 27 &  SCL_IS_total< 39 ~ 4, 
+                        SCL_IS_total >=39 ~ 5
+                      )) ->SAM_netq
+
+SAM_netq$SCL_IS_cutoff<- factor(SAM_netq$SCL_IS_cutoff, 
+                                levels = c(0,1,2,3,4,5), 
+                                labels=c("very low - low", "below average", "average", "above average", "high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_IS_cutoff))
+```
+
+DEP - Depression
+```{r SCL90 score Depressie subscale, echo=TRUE}
+Depressie=c("SCL_3", "SCL_5", "SCL_14", "SCL_15", "SCL_19", "SCL_20", "SCL_22", "SCL_26", "SCL_29", "SCL_30", "SCL_31", "SCL_32", "SCL_51", "SCL_54", "SCL_59", "SCL_79")
+sum_scoring_sam(df=SAM_netq, items=Depressie, outcome="SCL_DEP", miss_limit = 0) -> SAM_netq
+
+SAM_netq %>% mutate(SCL_DEP_cutoff = 
+                      case_when(
+                        SCL_DEP_total <=19 ~ 0,
+                        SCL_DEP_total >19 & SCL_DEP_total<24 ~ 1,
+                        SCL_DEP_total ==24  ~ 2, 
+                        SCL_DEP_total > 24 & SCL_DEP_total<36 ~3,
+                        SCL_DEP_total >=36~4
+                      )) ->SAM_netq
+
+SAM_netq$SCL_DEP_cutoff<- factor(SAM_netq$SCL_DEP_cutoff, 
+                                 levels = c(0,1,2,3,4), 
+                                 labels=c("below average", "average", "above average", "high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_DEP_cutoff))
+```
+
+ANX - Anxiety
+```{r SCL90 score Angst subscales, echo=TRUE}
+Angst=c("SCL_2", "SCL_17", "SCL_23", "SCL_33", "SCL_39", "SCL_57", "SCL_72", "SCL_78", "SCL_80", "SCL_86")
+sum_scoring_sam(df=SAM_netq, items=Angst, outcome="SCL_ANX", miss_limit = 0)-> SAM_netq
+
+SAM_netq  %>% mutate(SCL_ANX_cutoff = 
+                       case_when(
+                         SCL_ANX_total <=11 ~ 0,
+                         SCL_ANX_total >11 & SCL_ANX_total<15 ~ 1,
+                         SCL_ANX_total >=15 & SCL_ANX_total<=21 ~ 2,
+                         SCL_ANX_total >=22 ~3
+                       )) ->SAM_netq
+
+SAM_netq$SCL_ANX_cutoff<- factor(SAM_netq$SCL_ANX_cutoff, 
+                                 levels = c(0,1,2,3), 
+                                 labels=c("very low - below average", "average", "above average - high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_ANX_cutoff))
+```
+
+
+HOS - Hostility
+```{r SCL90 score Hostiliteit subscale, echo=TRUE}
+# *Hostiliteit*
+Hostiliteit=c("SCL_11", "SCL_24", "SCL_63", "SCL_67", "SCL_74", "SCL_81")
+sum_scoring_sam(df=SAM_netq, items=Hostiliteit, outcome="SCL_HOS", miss_limit = 0) -> SAM_netq
+
+SAM_netq%>% mutate(SCL_HOS_cutoff = 
+                     case_when(
+                       SCL_HOS_total <=6 ~ 0,
+                       SCL_HOS_total >6 & SCL_HOS_total<9 ~ 1,
+                       SCL_HOS_total >8 & SCL_HOS_total<11 ~ 2,
+                       SCL_HOS_total >=11 ~ 3
+                     )) ->SAM_netq
+
+SAM_netq$SCL_HOS_cutoff<- factor(SAM_netq$SCL_HOS_cutoff, 
+                                 levels = c(0,1,2,3), 
+                                 labels=c("very low -  below average", " average ", "above average - high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_HOS_cutoff))
+```
+
+PHOB - Phobic Anxiety
+```{r SCL90 score Agorafobie subscales, echo=TRUE}
+Agorafobie=c("SCL_13", "SCL_25", "SCL_47", "SCL_50", "SCL_70", "SCL_75", "SCL_82")
+sum_scoring_sam(df=SAM_netq, items=Agorafobie, outcome="SCL_PHOB", miss_limit = 0) -> SAM_netq
+
+# make cutoffscore
+SAM_netq  %>% mutate(SCL_PHOB_cutoff = 
+                       case_when(
+                         SCL_PHOB_total <=8 ~ 0,
+                         SCL_PHOB_total >8 & SCL_PHOB_total<11 ~ 1,
+                         SCL_PHOB_total >=11 ~ 2
+                       )) ->SAM_netq
+
+SAM_netq$SCL_PHOB_cutoff<- factor(SAM_netq$SCL_PHOB_cutoff, 
+                                  levels = c(0,1,2), 
+                                  labels=c("very low -  average", "above average - high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_PHOB_cutoff))
+```
+
+Sleep problems sub-scale
+```{r SCL90 score Slaapproblemen subscale, echo=TRUE}
+# *Slaapproblemen*
+Slaapprob=c("SCL_44", "SCL_64", "SCL_66")
+sum_scoring_sam(df=SAM_netq, items=Slaapprob, outcome="SCL_Sleep", miss_limit = 0) -> SAM_netq
+
+SAM_netq  %>% mutate(SCL_Sleep_cutoff = 
+                       case_when(
+                         SCL_Sleep_total <=3 ~ 0,
+                         SCL_Sleep_total >3 & SCL_Sleep_total<6 ~ 1,
+                         SCL_Sleep_total >5 & SCL_Sleep_total<9 ~ 2,
+                         SCL_Sleep_total >=9 ~ 3
+                       )) ->SAM_netq
+
+SAM_netq$SCL_Sleep_cutoff<- factor(SAM_netq$SCL_Sleep_cutoff, 
+                                   levels = c(0,1,2,3), 
+                                   labels=c("very low - below average", "average", "above average - high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_Sleep_cutoff))
+```
+
+"Other SCL90 items"
+```{r SCL90 score Overige subscale, echo=TRUE}
+Overige=c("SCL_16", "SCL_60", "SCL_62", "SCL_77", "SCL_84", "SCL_85", "SCL_87", "SCL_89", "SCL_90")
+sum_scoring_sam(df=SAM_netq, items=Overige, outcome="SCL_other", miss_limit = 0) -> SAM_netq
+```
+
+
+General Severity Index (GSI) (ook psychoneuroticisme..) is the average score for all responded items and serves as an overall measure of psychiatric distress
+```{r SCL90 score psychoneuroticisme, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=new.SCL.names, outcome="SCL", miss_limit = 0) -> SAM_netq
+
+SAM_netq  %>% mutate(SCL_cutoff = 
+                       case_when(
+                         SCL_total <= 91 ~ 0,
+                         SCL_total >91 & SCL_total<96 ~ 1,
+                         SCL_total >95 & SCL_total<113 ~ 2,
+                         SCL_total >112 & SCL_total<124 ~ 3,
+                         SCL_total >123 & SCL_total<133 ~ 4,
+                         SCL_total >132 & SCL_total<183 ~ 5,
+                         SCL_total >=183 ~ 6
+                       )) ->SAM_netq
+
+SAM_netq$SCL_cutoff<- factor(SAM_netq$SCL_cutoff, 
+                             levels = c(0,1,2,3,4,5,6), 
+                             labels=c("very low ", "low", "below average", "average", "above average"," high", "very high"))
+
+hist(as.numeric(SAM_netq$SCL_cutoff))
+```
+
+SCL summary
+```{r Summarize SCL scores, echo=FALSE, results='asis'}
+SCL_score_names<- c("SCL_SOM_total", "SCL_SOM_cutoff", "SCL_OC_total", "SCL_OC_cutoff", "SCL_IS_total", "SCL_IS_cutoff",
+                    "SCL_DEP_total", "SCL_DEP_cutoff", "SCL_ANX_total", "SCL_ANX_cutoff", "SCL_HOS_total", "SCL_HOS_cutoff",
+                    "SCL_PHOB_total", "SCL_PHOB_cutoff", "SCL_Sleep_total", "SCL_Sleep_cutoff", "SCL_other_total", 
+                    "SCL_total", "SCL_cutoff")
+
+SCL_labels<-c(SCL_SOM_total = "Somatization (continous)",  SCL_SOM_cutoff= "Somatization (cutoff)", 
+              SCL_OC_total= "Obsessive-Compulsive (continous)" , SCL_OC_cutoff = "Obsessive-Compulsive (cutoff)" , 
+              SCL_IS_total = "Interpersonal Sensitivity (continous)",  SCL_IS_cutoff = "Interpersonal Sensitivity (cutoff)",
+              SCL_DEP_total= "Depression (continous)",   SCL_DEP_cutoff = "Depression (cutoff)" ,  
+              SCL_ANX_total = "Anxiety (continous)",  SCL_ANX_cutoff = "Anxiety (cutoff)" ,  
+              SCL_HOS_total = "Hostility (continous)",  SCL_HOS_cutoff = "Hostility (cutoff)" ,
+              SCL_PHOB_total = "Phobic Anxiety (continous)" ,  SCL_PHOB_cutoff = "Phobic Anxiety (cutoff)" ,  
+              SCL_Sleep_total = "Sleep Problems (continous)",  SCL_Sleep_cutof = "Sleep Problems (cutoff)",  
+              SCL_other_total = "other items", 
+              SCL_total = "General Severity Index (continous)",  SCL_cutoff = "General Severity Index (cutoff)")
+
+paste0(SCL_score_names, collapse = " + ") -> scl_vars_summed
+
+SCL_table_formula <- paste0("Condition ~", scl_vars_summed)
+SCL_table_formula2=as.formula(SCL_table_formula)
+
+tableby(SCL_table_formula2, data=SAM_netq) -> Table.SCL
+summary(Table.SCL, title = "SAM Overview SCL90 scores", 
+        labelTranslations = SCL_labels)
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove SCL items, eval=FALSE, include=FALSE}
+#use new names vector (because columns are renamed)
+SAM_netq %>% select(-c(!!!syms(new.SCL.names))) -> SAM_netq
+glimpse(SAM_netq)
+```
+
+
+## Section 2. Life Events: CTQ, LSC
+
+### CTQ: Childhood Trauma Questionnaire
+This is the Dutch version of the CTQ: Jeugd Trauma Vragenlijst (JTV). The total score ranges from 25 to 125. Higher scores indicate higher levels of childhood trauma.
+
+The items that are __reverse scored__ (2,5,7,12,17,23,25; corresponding to items B, E, G, L, Q, W, Y in our dataset) have to be recoded.
+```{r CTQ Recode Reverse Scored, echo=TRUE}
+LETTERS[c(2,5,7,12,17,23,25)] # check which letters correspond to item numbers 2,5,7,12,17,23,25 Note "LETTERS" is a build in r vector
+JTV_recode_names <- c("JTV__B", "JTV__E", "JTV__G", "JTV__L", "JTV__Q", "JTV__W", "JTV__Y")
+SAM_netq %>% mutate_at(JTV_recode_names, function(x){6-x}) -> SAM_netq
+```
+
+Subsequently, the __total sum__ CTQ score is calculated (Note: if one item is missing, the total score is missing).
+```{r CTQ Total Sum, echo=TRUE}
+grep(pattern = "JTV", x = names(SAM_netq), value = TRUE) -> JTV_items
+sum_scoring_sam(df=SAM_netq, items=JTV_items, outcome="JTV", miss_limit = 0) ->SAM_netq
+```
+
+As well as, the scores for the five __subscales__ of the CTQ are calculated. If one item in a particular subscale is missing, the subscale score is missing (1 missing = total missing)
+
+For each subscale score, a __cut-off score__ is calculated that indicates whether Childhood Maltreatment (CM) was present or not. The applied  cut-off values for CM are: PA >=10; EA >=13; SA>=8; PN>=10; EN>=15. Value of 1 indicates CM, value of 0 indicates 'without CM' (WCM).
+
+1) Physical abuse (PA)
+```{r CTQ Physical abuse, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=c("JTV__I", "JTV__J", "JTV__K", "JTV__N", "JTV__O"), outcome="JTV_PA", miss_limit = 0, cutoff=10) ->SAM_netq
+```
+2) Emotional abuse (EA)
+```{r CTQ Emotional abuse, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=c("JTV__C", "JTV__H", "JTV__M", "JTV__P", "JTV__V"), outcome="JTV_EA", miss_limit = 0, cutoff=13) ->SAM_netq
+```
+3) Sexual abuse (SA)
+```{r CTQ Sexual abuse, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=c("JTV__R", "JTV__S", "JTV__T", "JTV__X", "JTV__U"), outcome="JTV_SA", miss_limit = 0, cutoff=8) ->SAM_netq
+```
+4) Physical Neglect (PN)
+```{r CTQ Physical Neglect, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=c("JTV__A", "JTV__B", "JTV__D", "JTV__F", "JTV__W"), outcome="JTV_PN", miss_limit = 0, cutoff = 10) ->SAM_netq
+```
+5) Emotional Neglect (EN)
+```{r CTQ Emotional Neglect, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=c("JTV__E", "JTV__G", "JTV__L", "JTV__Q", "JTV__Y"), outcome="JTV_EN", miss_limit = 0, cutoff=15) -> SAM_netq
+```
+
+These cutoff scores were also used to compose:
+1) a variable to indicate whether there was 'any form of childhood maltreatment' (= one, or more, subscales above cut-off). Value of 1 indicates CM, value of 0 indicates (WCM).
+```{r CTQ Cut-off total score, echo=TRUE}
+jtv_subscales = c(  "JTV_PA_cutoff" , "JTV_EA_cutoff" ,  "JTV_SA_cutoff" ,  "JTV_PN_cutoff" ,  "JTV_EN_cutoff")
+SAM_netq %>% select(all_of(jtv_subscales)) %>%  rowSums() %>%  unlist(.)!=0  ->jtv_total_cutoff_logical 
+# Returns vector with true if  sum of cutoff values is not 0 is. (i.e. if 1 of the subscales is 1)
+ifelse(jtv_total_cutoff_logical, yes=1, no=0)->SAM_netq$JTV_CM
+```
+
+2) a variable to indicate if there was 'any form of Abuse'
+```{r CTQ  Cut-off Abuse, echo=TRUE}
+jtv_abuse = c(  "JTV_PA_cutoff" , "JTV_EA_cutoff" ,  "JTV_SA_cutoff" )
+SAM_netq %>% select(all_of(jtv_abuse)) %>%  rowSums() %>%  unlist(.)!=0  ->jtv_abuse_cutoff_logical 
+# Returns vector with true if  sum of cutoff values is not 0 is. (i.e. if 1 of the subscales is 1)
+ifelse(jtv_abuse_cutoff_logical, yes=1, no=0)->SAM_netq$JTV_abuse
+```
+
+3) and a variable to indicate if there was 'any form of Neglect'
+```{r CTQ Cut-off Neglect, echo=TRUE}
+jtv_neglect = c(  "JTV_PN_cutoff" ,  "JTV_EN_cutoff")
+SAM_netq %>% select(all_of(jtv_neglect)) %>%  rowSums() %>%  unlist(.)!=0  ->jtv_neglect_cutoff_logical 
+# Returns vector with true if  sum of cutoff values is not 0 is. (i.e. if 1 of the subscales is 1)
+ifelse(jtv_neglect_cutoff_logical, yes=1, no=0)->SAM_netq$JTV_neglect
+```
+
+CTQ total score Histogram
+```{r plot jtv, echo=TRUE}
+hist(as.numeric(SAM_netq$JTV_total))
+```
+
+
+Finally all CTQ variables are labeled and a summary table is created.
+```{r CTQ labeling output, echo=FALSE, results="asis"}
+JTV_score_names=c("JTV_PA_cutoff", "JTV_EA_cutoff", "JTV_SA_cutoff", "JTV_PN_cutoff", "JTV_EN_cutoff", "JTV_CM", "JTV_abuse", "JTV_neglect")
+# Add labels to variable values.
+SAM_netq %>%  mutate_at(.,.vars=JTV_score_names, factor,levels=c(1,0), labels =c("yes (moderate-severe)", "no"))-> SAM_netq 
+
+labels_JTV_table<- c(
+  JTV_total= 'Total CTQ (continuous',
+  JTV_CM ='any abuse/neglect',
+  jtv_abuse = 'any abuse',
+  jtv_neglect = 'any neglect',
+  
+  JTV_PA_total ='Physical Abuse (continuous)',
+  JTV_EA_total='Emotional Abuse (continuous)',
+  JTV_SA_total ='Sexual Abuse (continuous)',
+  JTV_PN_total ='Physical Neglect (continuous)',
+  JTV_EN_total ='Emotional Neglect (continuous)',
+  
+  JTV_PA_cutoff ='Physical Abuse (cutoff)',
+  JTV_EA_cutoff ='Emotional Abuse (cutoff)',
+  JTV_SA_cutoff='Sexual Abuse (cutoff)',
+  JTV_PN_cutoff ='Physical Neglect (cutoff)',
+  JTV_EN_cutoff ='Emotional Neglect (cutoff)'
+)
+
+# Quick overview of JTV data in sample:
+# make formula for table
+paste0(JTV_score_names, # NOTE names jtv_scores (min the first element, which is condition)
+       collapse = " + ") -> jtv_vars_summed
+
+JTV_table_formula <- paste0("Condition ~", jtv_vars_summed)
+JTV_table_formula2=as.formula(JTV_table_formula)
+
+tableby(JTV_table_formula2, data=SAM_netq) -> Table.JTV
+summary(Table.JTV, title = "SAM Overview CTQ scores", 
+        labelTranslations = labels_JTV_table)
+
+# Save table to word file
+# write2word(Table.JTV,  "JTV.doc", title = "SAM Overview CTQ scores")
+
+# remove used variables
+# rm(JTV_table_formula,JTV_table_formula2, JTV_score_names,
+#    jtv_neglect_cutoff_logical, jtv_abuse_cutoff_logical, jtv_total_cutoff_logical)
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove JTV items, eval=FALSE, include=FALSE}
+#use new names vector (because variables were renamed)
+SAM_netq %>% select(-c(!!!syms(JTV_items))) -> SAM_netq
+# glimpse(SAM_netq)
+```
+
+
+### LSC-R: Life Stressor Checklist Revised (LSC-R)
+First the original LSC-R item names (for the 'did you experience this event' variable) are collected in a vector.
+There are 29 events in this questionnaire (which items are coded LSC_1 t/m LSC_29), after each question there are follow-up questions about the impact of the event etc.
+```{r Create vector with LSC event variable names, echo=TRUE}
+#original names
+grep(pattern = "LSC", x = names(SAM_netq), value = TRUE) -> LSC_items
+# LSCR item names have the following pattern:
+paste("LSC", rep(1:29), sep='_', collapse = NULL) -> LSC_names
+# LSC_names
+```
+There is one control question in the LSC-R (in our data LSC_X): all participants were asked to answer 'yes' (or 1) to this question. This was the case in our dataset.
+```{r LSCr check control question, echo=TRUE}
+length(which(SAM_netq$LSC_X ==1)) # = 120 (= all participants)
+SAM_netq %>% select(-LSC_X) ->SAM_netq # drop variable from dataset
+```
+
+Subsequently the total LSC-R sum score is calculated, which represents how many events (of the 29) were experienced. Using the "sum_cutoff_scoring_sam" function.
+```{r LSC-R total score, echo=TRUE}
+sum_cutoff_scoring_sam(df=SAM_netq, items=LSC_names, outcome="LSC_event", miss_limit=0, cutoff=13) ->SAM_netq
+```
+
+Next the total score for sexual abuse is calculated (using the same function, on items 23, 24, 25, 26, 27).
+```{r LSC Total sumscore, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("LSC_23", "LSC_24", "LSC_25", "LSC_26", "LSC_27"), outcome="LSC_sexual", miss_limit=0) ->SAM_netq
+```
+
+For each experienced event, an __impact score__ is calculated to represent the impact of this event on the participant during the last year. If participants did not experience the event, the impact is zero, otherwise '<the impact variable>'. NB 0= no impact; 4= a lot of impact
+
+```{r LSC-Recode impact var, echo=TRUE}
+# collect original names of impact vars in vector
+original_LSC_impact_variabels <- c("LSC_1a_A4", "LSC_2a_A4",  "LSC_3a_A4", "LSC_4a_A3", "LSC_5a_A3", "LSC_6a_A3", "LSC_7a_A3", "LSC_8a_A3", "LSC_9a_A3", "LSC_10a_A5", "LSC_11a_A5", "LSC_12a_A5", "LSC_13a_A3", "LSC_14a_A3", "LSC_15a_A3", "LSC_16a_A2", "LSC_17a_A2", "LSC_18a_A5", "LSC_19a_A4", "LSC_20a_A4", "LSC_21a_A5",  "LSC_22a_A5", "LSC_23a_A5", "LSC_24a_A5", "LSC_25a_A5", "LSC_26a_A5", "LSC_27a_A5",  "LSC_28a_A6", "LSC_29a_A5" )
+
+# create variables for loop below
+SAM_netq[LSC_names] -> LSC_item_data
+SAM_netq[original_LSC_impact_variabels]-> LSC_impact_data
+LSC_impact_scores<-list()
+
+# Calculate 'new impact scores' if event= 0 ->impact=0 (this replaces NA's in impact variabless)
+for (i in 1:29){
+  purrr::map2_dfc(.x=LSC_item_data[i],.y=LSC_impact_data[i], .f=function(x,y){ifelse(x==0, 0, y)} ) -> LSC_impact_scores[i]  # 
+}
+# change list to dataframe
+as.data.frame.list(LSC_impact_scores ) -> LSC_impact_scores_df
+
+#Create names impact var)
+paste(LSC_names, "impact", sep='_', collapse = NULL) -> LSC_impact_names
+names(LSC_impact_scores_df)<- LSC_impact_names # and add new names to dataframe
+
+# add new impact columns to SAM_netq data
+cbind(SAM_netq, LSC_impact_scores_df) ->SAM_netq
+```
+
+Then the total impact of experienced events score is calculated.
+```{r LSC-R impact sumscore, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=LSC_impact_names, outcome="LSC_impact", miss_limit=0) -> SAM_netq
+```
+
+Finally there is and event * impact sum score calculated.
+```{r LSC calculate event * impact sumscores, echo=TRUE}
+# create /assessing variables for loop below.
+LSC_item_data<-  SAM_netq[LSC_names] # for input x
+LSC_impact_scores_df<-SAM_netq[LSC_impact_names] # for input y
+LSC_event_impact_scores<-list() # for output
+
+for (i in 1:29){
+  purrr::map2_dfc(.x=LSC_item_data[i],.y=LSC_impact_scores_df[i], .f=function(x,y){x*y} ) -> LSC_event_impact_scores[i]
+}
+
+#loop returns list, change to dataframe
+as.data.frame.list(LSC_event_impact_scores ) -> LSC_event_impact_scores_df
+
+# New names for item * event code.
+paste(LSC_names, "event_impact", sep='_', collapse = NULL) -> LSC_event_impact_names
+names(LSC_event_impact_scores_df) <- LSC_event_impact_names # and rename
+
+#add event * impact scores to SAM_netq datafile
+cbind(SAM_netq, LSC_event_impact_scores_df) -> SAM_netq
+
+# calculate sum score for this new event*impact score
+sum_scoring_sam(df=SAM_netq, items=LSC_event_impact_names, outcome = "LSC_event_impact", miss_limit = 0)-> SAM_netq
+```
+
+And the results are summarized in a table
+```{r LSC results to table , echo=FALSE, results="asis"}
+# # add variable labels
+LSC_labels<-c(LSC_event_total= "Stressful events (#, continous)" ,
+              LSC_event_cutoff ='Stressful events (#, cutoff)',
+              LSC_impact_total =  "Total impact in last year (continous)",
+              LSC_event_impact_total = '# Stressful events x impact last year (continous)' ,
+              LSC_sexual_total = 'Sexual Abuse (#, continous)')
+
+# Quick overview of LSC data in sample:
+tableby(Condition ~ LSC_event_total + LSC_event_cutoff + LSC_impact_total + LSC_event_impact_total + LSC_sexual_total, data=SAM_netq) -> Table.LSC
+summary(Table.LSC, title = "SAM Overview LSC scores", labelTranslations = LSC_labels)
+# Save table to word file
+#write2word(Table.LSC,  "LSC.doc", title = "SAM Overview LSC scores")
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove LSC items, eval=FALSE, include=FALSE}
+#use new names vector (because columns were renamed)
+SAM_netq %>% select(-c(!!!syms(LSC_names),
+                       !!!syms(LSC_items),
+                       !!!syms(LSC_impact_names),
+                       !!!syms(LSC_event_impact_names))) -> SAM_netq
+```
+
+
+## Section 3. Personality: STAIT, VTCI, HEXACO
+
+### STAI-T: Trait Anxiety
+This questionnaire is scored using the scoring_sam function in 'function_scoring_sam.R'.  First the items that are __reverse scored__ (A, C, F, G, J, M, N, O, P, S in our dataset) are recoded. 
+
+There is one control question this questionnaire (item R; all participants are to answer '4' on this question). This question is not included in the sum score calculation. 
+```{r check stait-t control question, echo=TRUE}
+# How many participants (of the total (120) ) did not answer "4"?
+nrow(SAM_netq) - length(which(SAM_netq$StaiTr__R == 4)) # so 3 participants did not answer 4 to this question
+# for one participant, this item is missing.
+SAM_netq[(which(is.na(SAM_netq$StaiTr__R))),grep("StaiTr", names(SAM_netq), value = T)] # as is the rest of the Stai Trait questionnaire...
+
+# for the other two participants a different answer is given.
+SAM_netq[(which(SAM_netq$StaiTr__R != 4)),grep("StaiTr", names(SAM_netq), value = T)]
+# decided not to exclude the data of these participants, because not all responses are 1 (so there is variation, no indication for 'automatic' 1 responding)
+
+# This question is not needed for scoring, and is excluded from the dataset for further calculations / imputations
+SAM_netq %>% select(-StaiTr__R) ->SAM_netq
+```
+
+
+The total score on the STAI Trait is calculated by summing all items. If there more than 1 item missing, the total STAI score of that participant is set to missing. Finally participants with a total score 39 or lower are classified in the low trait anxiety category. (Subsequently a score of 40 and above is classified as high trait anxiety).
+> Eventueel check literature nog!
+
+```{r Stai Trait, echo=FALSE, results="asis"}
+STAI.T_recode_names = c("StaiTr__A", "StaiTr__C", "StaiTr__F", "StaiTr__G", "StaiTr__J", "StaiTr__M", "StaiTr__N", "StaiTr__O", "StaiTr__P", "StaiTr__S")
+SAM_netq %>% mutate_at(STAI.T_recode_names, function(x){5-x}) -> SAM_netq
+
+# Collect STAI Trait variable names in vector
+STAI.T_names= c("StaiTr__A", "StaiTr__B" ,"StaiTr__C" ,"StaiTr__D" ,"StaiTr__E" ,"StaiTr__F" ,"StaiTr__G", "StaiTr__H" ,"StaiTr__I" ,"StaiTr__J", "StaiTr__K", "StaiTr__L" ,"StaiTr__M" ,"StaiTr__N" ,"StaiTr__O", "StaiTr__P" ,"StaiTr__Q",
+                "StaiTr__S" ,"StaiTr__T", "StaiTr__U")
+sum_cutoff_scoring_sam(df=SAM_netq, items=STAI.T_names, outcome="STAI_T", miss_limit=1, cutoff=40) -> SAM_netq
+
+# add labels to cut_off var
+SAM_netq$STAI_T_cutoff <-factor(SAM_netq$STAI_T_cutoff ,levels = c(0,1), labels = c("Low", "High"))
+# make table
+tableby(Condition ~ STAI_T_total + STAI_T_cutoff, data=SAM_netq) -> Table.STAI.T
+summary(Table.STAI.T, title = "SAM Overview STAI T scores", 
+        labelTranslations = c(StaiT_total = "STAI Trait (Continours)", StaiT_cutoff = "Trait Anxiety (cutoff)" ))
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove STAI-T items, eval=FALSE, include=FALSE}
+#use new names vector
+SAM_netq %>% select(-c(StaiTr__R, !!!syms(STAI.T_names))) -> SAM_netq   # NOTE stai-t-R is a control item (not used in scoring, now also not in STAI.T_names variable)
+#glimpse(SAM_netq)
+```
+
+
+### s-TCI: Short Temperament and Character Invertory
+Data is collected with the dutch version: de Nederlandse Verkorte Temperament en Karakter Vragenlijst (VTCI).
+
+The names in the dataset were not corresponding to the item names. This is corrected. Note, the correct names/numbers were in the 'attributes' of each variable (also see Hexaco and SCL).
+```{r VTCI recoding1, echo=TRUE}
+grep(pattern = "VTCI", x = names(SAM_netq), value = TRUE) -> old.vtci_items_names
+#new VTCI names (note correct item names are in attributes)
+paste("VTCI",rep(1:105), sep="_") -> new.vtci.names
+
+SAM_netq%>%
+  rename_at(vars(old.vtci_items_names), ~new.vtci.names) -> SAM_netq
+ #SAM_netq %>% select(new.vtci.names) %>% str   # to check of new names align with attributes
+```
+
+Also the data consisted of scores 1 (correct) and 2 (incorrect), For scoring, this needed to be 1(correct) and 0 (incorrect)
+```{r VTCI recoding2, echo=TRUE, warning=FALSE}
+library(labelled)
+# info on haven labeled dataformat: https://haven.tidyverse.org/articles/semantics.html
+SAM_netq %>% 
+  mutate_at(vars(new.vtci.names), funs(recode(.,`2` = 0L, `1`=1L, `0`=9L))) %>% # The only valid values in original data are 2 and 1, 0's need to be missing
+  mutate_at(vars(new.vtci.names), funs(na_if(.,9L)))->SAM_netq # but are first coded to 3 and then set to missing.
+
+for (i in 1:length(new.vtci.names)) {
+  labelled::labelled(SAM_netq[,new.vtci.names][[i]], labels=c("incorrect"=0, "correct"=1))->SAM_netq[,new.vtci.names][[i]] # apply new label to each item
+}
+# for checking
+#SAM_netq$VTCI_1
+```
+
+
+Reverse coded VTCI variables are recoded ("omscoren")
+
+```{r VTCI recode Reverse coded items, echo=TRUE}
+VTCI_recode_names = c("VTCI_2","VTCI_4","VTCI_6","VTCI_7","VTCI_8","VTCI_9","VTCI_11","VTCI_14","VTCI_18","VTCI_21","VTCI_23","VTCI_24","VTCI_25","VTCI_26","VTCI_28","VTCI_32","VTCI_33","VTCI_34","VTCI_36","VTCI_37","VTCI_41","VTCI_42","VTCI_45","VTCI_47","VTCI_50","VTCI_53","VTCI_54","VTCI_58","VTCI_60","VTCI_61","VTCI_62","VTCI_64","VTCI_69","VTCI_70","VTCI_71","VTCI_72","VTCI_73","VTCI_74","VTCI_75","VTCI_76","VTCI_77","VTCI_79","VTCI_80","VTCI_81","VTCI_83","VTCI_84","VTCI_86","VTCI_90","VTCI_91","VTCI_94","VTCI_96","VTCI_99","VTCI_103","VTCI_104")
+SAM_netq %>% mutate_at(VTCI_recode_names, function(x){1-x}) -> SAM_netq
+```
+
+
+The VTCI operates with seven dimensions of personality traits: 
+- four so-called temperaments: Novelty, Seeking, Harm Avoidance, Reward Dependence, Persistence.
+- and three so-called characters: Self-Directness, Cooperativeness, Self-Transcendence
+
+__VTCI Tempaments__
+Novelty Seeking (NS) / Prikkelzoekend (PZ) 
+```{r VTCI Novelty Seeking, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_1","VTCI_11","VTCI_22","VTCI_28","VTCI_34","VTCI_36","VTCI_42","VTCI_55","VTCI_66","VTCI_70","VTCI_85","VTCI_86","VTCI_91","VTCI_96","VTCI_105"), outcome="VTCI_NS", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_NS_cutoff = case_when(
+  VTCI_NS_total <= 1 ~ 0,
+  VTCI_NS_total >1 & VTCI_NS_total< 4 ~ 1,
+  VTCI_NS_total == 4 ~ 2,
+  VTCI_NS_total >4 & VTCI_NS_total<9 ~ 3,
+  VTCI_NS_total >8 & VTCI_NS_total<11 ~ 4,
+  VTCI_NS_total >10 & VTCI_NS_total<14 ~ 5,
+  VTCI_NS_total >13 & VTCI_NS_total<16 ~ 6
+)) ->SAM_netq
+
+SAM_netq$VTCI_NS_cutoff<- factor(SAM_netq$VTCI_NS_cutoff, 
+                                 levels = c(0,1,2,3,4,5, 6), 
+                                 labels=c("very low","low","below average", "average", "above average", "high", "very high")) 
+
+hist(as.numeric(SAM_netq$VTCI_NS_cutoff))
+```
+
+Harm Avoidance (HA) / Leedvermijdend (LV)
+```{r VTCI Harm Avoidance, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_2","VTCI_10","VTCI_13","VTCI_16","VTCI_29","VTCI_48","VTCI_57","VTCI_60","VTCI_65","VTCI_71","VTCI_74","VTCI_83","VTCI_94","VTCI_98","VTCI_104"), outcome="VTCI_HA", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_HA_cutoff = case_when(
+  VTCI_HA_total == 0 ~ 0,
+  VTCI_HA_total >0 & VTCI_HA_total< 3 ~ 1,
+  VTCI_HA_total >2 & VTCI_HA_total<7 ~ 2,
+  VTCI_HA_total >6 & VTCI_HA_total<9 ~ 3,
+  VTCI_HA_total >8 & VTCI_HA_total<13 ~ 4,
+  VTCI_HA_total >12 & VTCI_HA_total<16 ~ 5
+)) ->SAM_netq
+
+SAM_netq$VTCI_HA_cutoff<- factor(SAM_netq$VTCI_HA_cutoff, 
+                                 levels = c(0,1,2,3,4,5), 
+                                 labels=c("low","below average", "average", "above average", "high", "very high")) 
+
+hist(as.numeric(SAM_netq$VTCI_HA_cutoff))
+```
+
+Reward Dependence (RD) / Sociaal gericht (SG) 
+```{r VTCI Reward Dependence, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_3","VTCI_12","VTCI_17","VTCI_23","VTCI_30","VTCI_37","VTCI_43","VTCI_51","VTCI_59","VTCI_72","VTCI_81","VTCI_82","VTCI_90","VTCI_95","VTCI_102"), outcome="VTCI_RD", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_RD_cutoff = case_when(
+  VTCI_RD_total <= 2 ~ 0,
+  VTCI_RD_total >2 & VTCI_RD_total< 6 ~ 1,
+  VTCI_RD_total == 6 ~ 2,
+  VTCI_RD_total >6 & VTCI_RD_total<11 ~ 3,
+  VTCI_RD_total == 11 ~ 4,
+  VTCI_RD_total >11 & VTCI_RD_total<14 ~ 5,
+  VTCI_RD_total >13 & VTCI_RD_total<16 ~ 6
+)) ->SAM_netq
+
+SAM_netq$VTCI_RD_cutoff<- factor(SAM_netq$VTCI_RD_cutoff, 
+                                 levels = c(0,1,2,3,4,5,6), 
+                                 labels=c("very low", "low","below average", "average", "above average", "high", "very high")) 
+
+hist(as.numeric(SAM_netq$VTCI_RD_cutoff))
+```
+
+Persistence (PS) / Volhardend (VH)
+```{r VTCI Persistence, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_7","VTCI_9","VTCI_15","VTCI_19","VTCI_26","VTCI_35","VTCI_41","VTCI_47","VTCI_52","VTCI_56","VTCI_64","VTCI_69","VTCI_76","VTCI_92","VTCI_99"), outcome="VTCI_PS", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_PS_cutoff = case_when(
+  VTCI_PS_total <= 3 ~ 0,
+  VTCI_PS_total >3 & VTCI_PS_total< 6 ~ 1,
+  VTCI_PS_total == 6 ~ 2,
+  VTCI_PS_total >6 & VTCI_PS_total<12 ~ 3,
+  VTCI_PS_total == 12 ~ 4,
+  VTCI_PS_total == 13 ~ 5,
+  VTCI_PS_total >13 & VTCI_PS_total<16 ~ 6
+)) ->SAM_netq
+
+SAM_netq$VTCI_PS_cutoff<- factor(SAM_netq$VTCI_PS_cutoff, 
+                                 levels = c(0,1,2,3,4,5,6), 
+                                 labels=c("very low", "low","below average", "average", "above average", "high", "very high")) 
+
+hist(as.numeric(SAM_netq$VTCI_PS_cutoff))
+```
+
+
+__VTCI Characters__
+
+Self-Directness (SD) / Zelfsturend
+```{r VTCI Self-directedness, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_4","VTCI_8","VTCI_14","VTCI_21","VTCI_33","VTCI_45","VTCI_53","VTCI_54","VTCI_58","VTCI_61","VTCI_75","VTCI_77","VTCI_84","VTCI_101","VTCI_103"), outcome="VTCI_SD", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_SD_cutoff = case_when(
+  VTCI_SD_total <= 5 ~ 0,
+  VTCI_SD_total >5 & VTCI_SD_total< 10 ~ 1,
+  VTCI_SD_total == 10 ~ 2,
+  VTCI_SD_total >10 & VTCI_SD_total<15 ~ 3,
+  VTCI_SD_total == 15 ~ 4
+)) ->SAM_netq
+
+SAM_netq$VTCI_SD_cutoff<- factor(SAM_netq$VTCI_SD_cutoff, 
+                                 levels = c(0,1,2,3,4), 
+                                 labels=c("very low", "low","below average", "average", "above average")) 
+
+hist(as.numeric(SAM_netq$VTCI_SD_cutoff))
+```
+
+Cooperativeness (CO) / Coöperatief
+```{r VTCI Cooperativeness, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_6","VTCI_18","VTCI_24","VTCI_25","VTCI_32","VTCI_40","VTCI_46","VTCI_50","VTCI_62","VTCI_63","VTCI_68","VTCI_73","VTCI_78","VTCI_80","VTCI_100"), outcome="VTCI_CO", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_CO_cutoff = case_when(
+  VTCI_CO_total <= 5 ~ 0,
+  VTCI_CO_total >5 & VTCI_CO_total< 10 ~ 1,
+  VTCI_CO_total == 10 ~ 2,
+  VTCI_CO_total >10 & VTCI_CO_total<15 ~ 3,
+  VTCI_CO_total == 15 ~ 4
+)) ->SAM_netq
+
+SAM_netq$VTCI_CO_cutoff<- factor(SAM_netq$VTCI_CO_cutoff, 
+                                 levels = c(0,1,2,3,4), 
+                                 labels=c("very low", "low","below average", "average", "above average")) 
+
+hist(as.numeric(SAM_netq$VTCI_CO_cutoff))
+```
+
+Self-Transcendence (ST) / Zelf transcendent *
+Zelftranscendent=SUM(VTCI_5 VTCI_20 VTCI_31 VTCI_38 VTCI_39 VTCI_44 VTCI_49 VTCI_67 VTCI_79 VTCI_87 VTCI_88 VTCI_89 VTCI_93 VTCI_97).
+
+```{r VTCI Self-Transcendence, echo=TRUE}
+sum_scoring_sam(df=SAM_netq, items=c("VTCI_5","VTCI_20","VTCI_31","VTCI_38","VTCI_39","VTCI_44","VTCI_49","VTCI_67","VTCI_79","VTCI_87","VTCI_88","VTCI_89","VTCI_93","VTCI_97"), outcome="VTCI_ST", miss_limit=0) -> SAM_netq
+
+SAM_netq  %>% mutate(VTCI_ST_cutoff = case_when(
+  VTCI_ST_total == 0 ~ 0,
+  VTCI_ST_total == 1 ~ 1,
+  VTCI_ST_total >1 & VTCI_ST_total<6 ~ 2,
+  VTCI_ST_total >5 & VTCI_ST_total<8 ~ 3,
+  VTCI_ST_total >7 & VTCI_ST_total<11 ~ 4,
+  VTCI_ST_total >10 & VTCI_ST_total<16 ~ 5
+)) ->SAM_netq
+
+ factor(SAM_netq$VTCI_ST_cutoff, 
+                                 levels = c(0,1,2,3,4,5),  # NB category low was not present (leading to erros in imputation, fixed with droplevels)
+                                 labels=c("low","below average", "average", "above average", "high", "Very high")) %>% droplevels() ->SAM_netq$VTCI_ST_cutoff
+
+hist(as.numeric(SAM_netq$VTCI_ST_cutoff))
+```
+
+Table subscale scores VTCI
+```{r VTCI results, echo=TRUE, results='asis'}
+VTCI_subscale_names<-c("VTCI_NS_total","VTCI_NS_cutoff", "VTCI_HA_total", "VTCI_HA_cutoff", "VTCI_RD_total" ,"VTCI_RD_cutoff" , "VTCI_PS_total", "VTCI_PS_cutoff", "VTCI_SD_total", "VTCI_SD_cutoff", "VTCI_CO_total", "VTCI_CO_cutoff",  "VTCI_ST_total", "VTCI_ST_cutoff")
+# make formula for table
+paste0(VTCI_subscale_names, # NOTE names  (min the first  2 elements, which are condition & subject)
+       collapse = " + ") -> vtci.vars.summed
+
+VTCI_table_formula <- paste0("Condition ~", vtci.vars.summed)
+VTCI_table_formula2=as.formula(VTCI_table_formula)
+
+labels_VTCI_table<-c(VTCI_NS_total = 'Novelty Seeking (continous)', VTCI_NS_cutoff = 'Novelty Seeking (cutoff)', 
+                     VTCI_HA_total= 'Harm Avoidance (continous)', VTCI_HA_cutoff= 'Harm Avoidance (cutoff)', 
+                     VTCI_RD_total= 'Reward Dependence (continous)', VTCI_RD_cutoff= 'Reward Dependence (cutoff)', 
+                     VTCI_PS_total= 'Persistence (continous)', VTCI_PS_cutoff = 'Persistence (cutoff)', 
+                     VTCI_SD_total= 'Self-Directedness (continous)', VTCI_SD_cutoff='Self-Directedness (cutoff)', 
+                     VTCI_CO_total= 'Cooperativeness (continous)', VTCI_CO_cutoff='Cooperativeness (cutoff)',
+                     VTCI_ST_total= 'Self-Transcendence (continous)', VTCI_ST_cutoff='Self-Transcendence (cutoff)')
+
+tableby(VTCI_table_formula2, data=SAM_netq) -> Table.VTCI
+summary(Table.VTCI, title = "SAM Overview VTCI scores", 
+        labelTranslations = labels_VTCI_table)
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove VTCI items, eval=FALSE, include=FALSE}
+#use new names vector (omdat koloms hernoemt zijn)
+SAM_netq %>% select(-c( !!!syms(new.vtci.names))) -> SAM_netq   # NOTE stai-t-R is een controle item en stond in in de variabele stai.t.names (want niet gebruikt in scoring)
+```
+
+
+### HEXACO
+This personality questionnaire contains 60 items. http://sites.psu.edu/personality/wp-content/uploads/sites/29060/2015/07/HEXACO-60-item-factor-analysis-study.pdf
+
+The original names for the HEXACO items in the dataset are not numbered correctly (with letter number combinations, not with numbers alone) (NOTE, the correct item name is in the label of the variables). The order in which that items appear in the data set corresponds to the correct numbers. The items are renamed with HEXACO_<item-number> and correspondence between new name (and item number) and original label is checked.
+```{r rename Hexaco items, echo=TRUE}
+grep(pattern = "HEXACO", x = names(SAM_netq), value = TRUE) -> hexaco_items_names # NOTE this are old HEXACO names
+paste("HEXACO", rep(1:60), sep = "_", collapse = NULL) -> new.hexaco.names
+SAM_netq%>%
+  rename_at(vars(hexaco_items_names), ~new.hexaco.names) -> SAM_netq
+# Check if numbers align with attributes # YES correct!
+```
+
+from manual: Items indicated with R are reverse-keyed items; for these items, responses should be reversed prior to computing scale scores: [5 = 1, 4 = 2, 3 = 3, 2 = 4, 1 = 5]
+
+*** Recode HEXACO*** (items 30,12,60,42,24,48,53,35,41,59,28,52,10,46,9,15,57,21,26,32,14,20,44,56,1,31,49,19,55)
+```{r recoding of reverse-keyed HEXACO items, echo=TRUE}
+recode_numbers_hexaco = c( 30,12,60,42,24,48,53,35,41,59,28,52,10,46,9,15,57,21,26,32,14,20,44,56,1,31,49,19,55)
+# unique(recode_numbers_hexaco) -> b # all unique (b same length as recode_numbers_hexaco)
+names(SAM_netq[new.hexaco.names][recode_numbers_hexaco]) -> recode_names_hexaco
+SAM_netq %>%
+  mutate_at(recode_names_hexaco ,function(x){6-x}) -> SAM_netq  # Recode variables
+# glimpse(SAM_netq) # works
+```
+
+from manual: Facet scale scores should be computed as means across all items in facet, after recoding of reverse-keyed items. Note that the facet scales of the 100- and 60-item versions of the HEXACO-PI-R are very short and are not intended to have high levels of internal-consistency reliability. They are recommended for use as predictors of conceptually related criterion variables and as indicators of the HEXACO personality factors.
+
+Subscale scoring (note manual checked for subscales, old SPSS code was weird).
+```{r HEXACO subscale scoring, echo=TRUE}
+# Honesty-Humility
+# Sincerity
+# 6, 30R, 54
+# Fairness
+# 12R, 36, 60R
+# Greed-Avoidance
+# 18, 42R
+# Modesty
+# 24R, 48R
+hexaco.hh<- c(6, 30, 54, 12, 36, 60, 18, 42, 24,48)
+paste0("HEXACO_",hexaco.hh)->hh.names
+SAM_netq[hh.names] %>% rowMeans() -> SAM_netq$HEXACO_hh.mean
+
+# Emotionality
+# Fearfulness
+# 5, 29, 53R
+# Anxiety
+# 11, 35R
+# Dependence
+# 17, 41R
+# Sentimentality
+# 23, 47, 59R
+hexaco.emo<- c(5,29,53,11,35,17,41,23,47,59)
+paste0("HEXACO_",hexaco.emo)->emo.names
+SAM_netq[emo.names] %>% rowMeans() -> SAM_netq$HEXACO_emo.mean
+
+# Extroversion
+# Social Self-Esteem
+# 4, 28R, 52R
+# Social Boldness
+# 10R, 34, 58
+# Sociability
+# 16, 40
+# Liveliness
+# 22, 46R
+hexaco.extr<- c(4,28,52,10,34,58,16,40,22,46)
+paste0("HEXACO_",hexaco.extr)->extr.names
+SAM_netq[extr.names] %>% rowMeans() -> SAM_netq$HEXACO_extr.mean
+
+# Agreeableness
+# Forgiveness
+# 3, 27
+# Gentleness
+# 9R, 33, 51
+# Flexibility
+# 15R, 39, 57R
+# Patience
+# 21R, 45
+hexaco.ag<- c(3,27,9,33,51,15,39,57,21,45)
+paste0("HEXACO_",hexaco.ag)->ag.names
+SAM_netq[ag.names] %>% rowMeans() -> SAM_netq$HEXACO_ag.mean
+
+# Conscientiousness
+# Organization
+# 2, 26R
+# Diligence
+# 8, 32R
+# Perfectionism
+# 14R, 38, 50
+# Prudence
+# 20R, 44R, 56R
+hexaco.co<- c(2,26,8,32,14,38,50,20,44,56)
+paste0("HEXACO_",hexaco.co)->co.names
+SAM_netq[co.names] %>% rowMeans() -> SAM_netq$HEXACO_co.mean
+
+# Openness to Experience
+# Aesthetic Appreciation
+# 1R, 25
+# Inquisitiveness
+# 7, 31R
+# Creativity
+# 13, 37, 49R
+# Unconventionality
+# 19R, 43, 55R
+hexaco.op<- c(1,25,7,31,13,37,49,19,43,55)
+paste0("HEXACO_",hexaco.op)->op.names
+SAM_netq[op.names] %>% rowMeans() -> SAM_netq$HEXACO_op.mean
+```
+
+
+table subscale scores HEXACO
+
+```{r HEXACO results, echo=FALSE, results='asis'}
+hexaco_subscale_names<-c("HEXACO_hh.mean", "HEXACO_emo.mean","HEXACO_extr.mean", "HEXACO_ag.mean","HEXACO_co.mean", "HEXACO_op.mean")
+# make formula for table
+paste0(hexaco_subscale_names, # NOTE names  (minus the first  2 elements, which are condition & subject)
+       collapse = " + ") -> hexaco.vars.summed
+
+HEX_table_formula <- paste0("Condition ~", hexaco.vars.summed)
+HEX_table_formula2=as.formula(HEX_table_formula)
+labels_HEX_table <- c(HEXACO_hh.mean = "Honesty-Humility",         
+                      HEXACO_emo.mean = "Emotionality",
+                      HEXACO_extr.mean = "Extraversion",       
+                      HEXACO_ag.mean = "Agreeableness",
+                      HEXACO_co.mean = "Conscientiousness",
+                      HEXACO_op.mean = "Openness to Experience")
+
+tableby(HEX_table_formula2, data=SAM_netq) -> Table.HEXACO
+summary(Table.HEXACO, title = "SAM Overview HEXACO scores", 
+        labelTranslations = labels_HEX_table)
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove hexaco items, eval=FALSE, include=FALSE}
+#use new names vector (columns renamed)
+SAM_netq %>% select(-c( !!!syms(new.hexaco.names))) -> SAM_netq
+glimpse(SAM_netq)
+```
+
+
+## Section 4. "emotional state"
+During the SAM study participants 'emotional state' is measured with at 10 timepoints with 2 VAS scales, and at 9 timepoints with the PANAS and the STAI-state.
+>All this information is in .csv "SAM_Timepoints_reactivity" (needed for AUC calculations in 'variable redution section', niet hier..)
+
+###  VAS-schalen A en B
+"How are you feeling right now"?
+VasA: Not tense at all - quite tense
+VASb: positive - negative
+```{r VAS, echo=TRUE}
+grep(pattern = "VAS", x = names(SAM_netq), value = TRUE) -> VAS_items_names
+# "VAS1_A"  "VAS1_B"  "VAS2_A"  "VAS2_B"  "VAS3_A"  "VAS3_B"  "VAS4_A"  "VAS4_B"  "VAS5_A"  "VAS5_B"  "VAS6_A"  "VAS6_B"  "VAS7_A"  "VAS7_B"  "VAS8_A"  "VAS8_B"  "VAS9_A"  "VAS9_B"  "VAS10_A" "VAS10_B" "VAS11_A" "VAS11_B"
+```
+> NOTE: preprocessed in SAM_explore_variable_reduction
+
+
+### STAI-State
+This questionnaire is collected at 9 different time points. A function is created to perform the scoring of one timepoint (note, this function is in 'sam_netq_function_scoring.r').
+```{r STAIS scoring, echo=TRUE}
+grep(pattern = "StaiSt", x = names(SAM_netq), value = TRUE) -> STAI.S_names # NOTE only used to remove these values at the end of code 
+# SAM_netq[,STAI.S_names]
+# first recode items
+stais_recodes<-list()
+for(i in 1:9){
+  recode_STAIS_SAM(SAM_netq, i) -> stais_recodes[[i]]
+} 
+#merge list elements in to dataframe
+as.data.frame.list(stais_recodes) -> stais_recodes_df
+
+# #for checking
+# stais_recodes_df %>% glimpse
+# SAM_netq %>% select(STAI.S_names) %>% glimpse
+
+# replace items in SAM_netq
+# for testing
+#which(colnames(stais_recodes_df) == "StaiSt1__A")
+#colnames(stais_recodes_df)[1]<-"StaiSt1__B"
+matching <- match(colnames(stais_recodes_df),colnames(SAM_netq)) # match collects the positions of the stai_recode_df names in SAM_NETQ ...
+# info: https://stackoverflow.com/questions/45009137/r-replace-data-frame-columns-based-on-column-names
+SAM_netq[,matching] <- stais_recodes_df # ... the indices of match indicate with variables in SAM_netq need to be replaced
+# for check
+# all_equal(SAM_netq[,STAI.S_names], stais_recodes_df)
+remove(matching,stais_recodes_df)
+
+# then score items
+# note STAIS_SAM function is in 'sam_netq_function_scoring.r'
+stais_scores<-list()
+for(i in 1:9){
+  score_STAIS_SAM(SAM_netq, i) -> stais_scores[[i]]
+} 
+# change list to dataframe.
+as.data.frame.list(stais_scores) -> stais_scores_df
+# and add to SAM_netq
+cbind(SAM_netq, stais_scores_df) -> SAM_netq
+# str(stais_scores_df)
+```
+
+The scores are depicted per experimental group.
+```{r results STAIS1-9, echo=FALSE, results="asis"}
+paste0(names(stais_scores_df), collapse = " + ") -> stais_scores_df_sum
+
+stais_formula= paste0("Condition ~ ", stais_scores_df_sum)
+stais_formula2=as.formula(stais_formula)
+tableby(stais_formula2, data=SAM_netq) -> Table.STAIS  
+summary(Table.STAIS, title = "SAM Overview STAI State scores per Timepoint")
+```
+
+
+### PANAS
+This questionnaire is collected at 9 different time points. A function is created to perform the scoring of one timepoint (note, this function is in 'sam_netq_function_scoring.r'). The function  is applied to calculate the PANAS scores on T2 - T10 in a for loop.
+```{r PANAS scoring, echo=TRUE}
+grep(pattern = "PANAS", x = names(SAM_netq), value = TRUE) -> PANAS_names # NOTE only used to remove these values at the end of code 
+
+panas_scores<-list()
+for(i in 1:9){
+  PANAS_SAM(SAM_netq, i) -> panas_scores[[i]]
+} 
+# change list to dataframe.
+as.data.frame.list(panas_scores) -> panas_scores_df
+# and bind to sam_neq dataset
+cbind(SAM_netq, panas_scores_df) -> SAM_netq
+```
+
+
+Subsequently, create table with overview of PANAS scores per experimental group
+```{r results PANAS1-9, echo=FALSE, results="asis"}
+paste0(names(panas_scores_df), collapse = " + ") -> PANAS_variabels_sum
+
+panas_formula= paste0("Condition ~ ", PANAS_variabels_sum) 
+panas_formula2=as.formula(panas_formula)
+
+tableby(panas_formula2, data=SAM_netq) -> Table.PANAS 
+summary(Table.PANAS, title = "SAM Overview PANAS scores per Timepoint")  
+
+# Save table to word file
+# write2word(Table.PANAS,  "PANAS.doc", title = "SAM Overview PANAS scores")
+```
+
+Possible to remove item variables form datasets (if eval=TRUE & include = TRUE)
+```{r Remove VAS STAIS PANAS items, eval=FALSE, include=FALSE}
+#use new names vector (colums renamed)
+SAM_netq %>% select(-c( !!!syms(VAS_items_names),
+                        !!!syms(PANAS_names),
+                        !!!syms(STAI.S_names)
+)) -> SAM_netq   # NOTE stai-t-R is control item (not used in scoring)
+glimpse(SAM_netq)
+```
+
+# Part IV. Clean & save
+
+## Drop unneeded variables
+```{r drop unneeded variables, echo=TRUE}
+# do not select ..... (the variables below)
+SAM_netq %>% select(-c(
+   # open questions in demographics
+  rokenaan, alcohol_hoeveel, alcohol_dagen, 
+  # de variables 'which drugs' kept, but not how often
+  drugs_hoevaak_A,  drugs_hoevaak_B,  drugs_hoevaak_C,  drugs_hoevaak_D, 
+  drugs_hoevaak_E, drugs_hoevaak_F, 
+  drugs_geld,   
+  # with experiment related information: shock_indicator
+  terugkoppeling_A, terugkoppeling_B, terugkoppeling_C,
+  terugkoppeling2_A, terugkoppeling2_B , shock_indicator,
+  verwacht_A, verwacht_B,
+  MCTcomplete, FGTcomplete,
+  FGTv, CMTv, protocolv,
+  # acute screening questionnaires (~same answers for all subjects, as participants were only included if they met the requirements of all items).
+  nu_ziek, vold_slaap, opstaan2, consum2u, roken2u, cafeine4u, fys_inspan, alcohol24u, drugs3dg  
+)) -> SAM_netq
+```
+
+## SAVE
+```{r save, echo=TRUE}
+saveRDS(SAM_netq, "processed_data/SAM_netq_scored.rds")
+```

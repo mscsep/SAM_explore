@@ -1,0 +1,585 @@
+---
+title: "Model performance evaluation: TM, RF, TM+RF"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+
+## Required packages and (preprocessed and imputed) data
+```{r setup}
+rm(list=ls())
+library(caret)
+library(DALEX) # for model performance measures. https://pbiecek.github.io/ema/modelPerformance.html#modelPerformanceR
+library(ggplot2)
+library(ggpubr) 
+library(patchwork)
+```
+load imputed data, prepared for SAM_explore analysis RFs / Boruta / lm's
+```{r data, results='hide', message=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+seed=3820
+# rf settings
+m.try=2
+n.tree=1500
+```
+
+
+# Model performance evaluation function
+
+Model performance evaluated via R2 and RMSE (https://stats.stackexchange.com/questions/56302/what-are-good-rmse-values)
+- RMSE has the same unit as the dependent variable (DV)
+- "there is no such thing as a good RMSE, because it is scale-dependent, i.e. dependent on your dependent variable. Hence one can not claim a universal number as a good RMSE."
+
+```{r}
+model.performance<-function(seed, method, model, dataset, preprocessing.formula, dependent.var){
+  # process data
+  dataset2<-preprocessing.formula(dataset)
+  # Setup cross-validation
+  control <- trainControl(method="repeatedcv", number=5, repeats=10)
+  # train model according to method
+  if (method == 'lm'){
+    set.seed(seed)
+    train(eval(model),method=method,data=dataset2, trControl=control)->trained.model
+  }else if (method == 'rf'){
+    set.seed(seed)
+    train(eval(model), dataset2, method=method, trControl=control, ntree=n.tree)->trained.model
+  }
+  set.seed(seed)
+  # calculate model performance
+  DALEX::explain(trained.model,
+                 data=dataset2, # performance calculated on this dataset
+                 y=dataset2[,dependent.var]
+  )->explained.model
+  
+  set.seed(seed)
+  DALEX::model_performance(explained.model)->performance
+
+  performance$measures$rmse->rmse.value
+  performance$measures$r2->r2.value
+  
+  #collect results
+  out<-list(explained.model, r2.value, rmse.value)
+  return(out)
+}
+```
+
+# theoretical linear models
+- information on the use of linear model & predict() together, see https://www.pluralsight.com/guides/linear-lasso-and-ridge-regression-with-r/ 
+- models with covariates (age & BMI) and the significant term(s) per memory type / group are evaluated
+
+### no stress group
+- emotional memory: 3-way interaction TA x cort x sAA
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(emotional.memory~1+age+BMI+
+                                                          STAI_T_total:AUCi_sAA_1:AUCi_CORT_1), 
+                    dataset=imp.nos[[x]], prep.emo,"emotional.memory")})->t.ne
+# collect r2's
+lapply(1:M,function(x){t.ne[[x]][[2]]}) %>% unlist ->t.r2.ne
+# collect rmse's
+lapply(1:M,function(x){t.ne[[x]][[3]]}) %>% unlist ->t.rmse.ne
+```
+
+### acute phase group
+- fear memory: interactions:
+  - trait anxiety x cortisol (i,day1) and 
+  - stress-exposure x sAA (i,day1)
+info on code for interaction terms: https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/formula
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(fear.memory~1+age+BMI+
+                                                          STAI_T_total:AUCi_CORT_1+
+                                                          stress_exposure:AUCi_sAA_1), 
+                    dataset=imp.ims[[x]], prep.fear.m,"fear.memory")})->t.if
+# collect r2's
+lapply(1:M,function(x){t.if[[x]][[2]]}) %>% unlist ->t.r2.if
+# collect rmse's
+lapply(1:M,function(x){t.if[[x]][[3]]}) %>% unlist ->t.rmse.if
+```
+
+- emotional: main effect cumulative stress on emotional memory
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(emotional.memory~1+age+BMI+
+                                                          stress_exposure), 
+                    dataset=imp.ims[[x]], prep.emo,"emotional.memory")})->t.ie
+# collect r2's
+lapply(1:M,function(x){t.ie[[x]][[2]]}) %>% unlist ->t.r2.ie
+# collect rmse's
+lapply(1:M,function(x){t.ie[[x]][[3]]}) %>% unlist ->t.rmse.ie
+```
+
+- neutral: main effect AUCi cortisol d1 on neutral memory
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(neutral.memory~1+age+BMI+
+                                                          AUCi_CORT_1), 
+                    dataset=imp.ims[[x]], prep.neu,"neutral.memory")})->t.in
+# collect r2's
+lapply(1:M,function(x){t.in[[x]][[2]]}) %>% unlist ->t.r2.in
+# collect rmse's
+lapply(1:M,function(x){t.in[[x]][[3]]}) %>% unlist ->t.rmse.in
+```
+
+### recovery phase group
+- no effects on emotional or fear memory
+- neutral memory: interactions:
+  - stress-exposure x cortisol (i,day1) and
+  - stress-exposure x sAA (i,day1)
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(neutral.memory~1+age+BMI+
+                                                          stress_exposure:AUCi_sAA_1+
+                                                          stress_exposure:AUCi_CORT_1), 
+                    dataset=imp.des[[x]], prep.neu,"neutral.memory")})->t.dn
+# collect r2's
+lapply(1:M,function(x){t.dn[[x]][[2]]}) %>% unlist ->t.r2.dn
+# collect rmse's
+lapply(1:M,function(x){t.dn[[x]][[3]]}) %>% unlist ->t.rmse.dn
+```
+
+
+# Boruta RF models
+
+- Follow up boruta findings with Random-forests per imputed dataset
+- good manual for RF after Boruta (https://www.kaggle.com/cdupin/using-boruta-feature-selection-wtih-random-forest)
+
+### no stress
+- fear memory: HEXACO_hh.mean, AUCi_stais_2
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(fear.memory~HEXACO_hh.mean+AUCi_stais_2),
+                    dataset=imp.nos[[x]],
+                    prep.fear.m,"fear.memory")})->rf.nf
+# collect r2's
+lapply(1:M,function(x){rf.nf[[x]][[2]]}) %>% unlist ->rf.r2.nf
+# collect rmse's
+lapply(1:M,function(x){rf.nf[[x]][[3]]}) %>% unlist ->rf.rmse.nf
+```
+
+- emotional: HEXACO_ag.mean, AUCi_panas_PosA_1
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(emotional.memory~HEXACO_ag.mean+AUCi_panas_PosA_1),
+                    dataset=imp.nos[[x]],
+                    prep.emo, "emotional.memory")})->rf.ne
+# collect r2's
+lapply(1:M,function(x){rf.ne[[x]][[2]]}) %>% unlist ->rf.r2.ne
+# collect rmse's
+lapply(1:M,function(x){rf.ne[[x]][[3]]}) %>% unlist ->rf.rmse.ne
+```
+
+- neutral: HEXACO_co.mean, VTCI_CO_total
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf', 
+                    model=expression(neutral.memory~HEXACO_co.mean+VTCI_CO_total),
+                    dataset=imp.nos[[x]],
+                    prep.neu, "neutral.memory")})->rf.nn
+# collect r2's
+lapply(1:M,function(x){rf.nn[[x]][[2]]}) %>% unlist ->rf.r2.nn
+# collect rmse's
+lapply(1:M,function(x){rf.nn[[x]][[3]]}) %>% unlist ->rf.rmse.nn
+```
+
+
+### acute phase group
+- fear memory: JTV_total HEXACO_extr.mean identified by Boruta, but NS in permutation tests (model performance not evaluated)
+
+- emotional memory: JTV_total HEXACO_hh.mean AUCi_VAS_mood_2
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(emotional.memory~JTV_total+HEXACO_hh.mean+AUCi_VAS_mood_2),
+                    dataset=imp.ims[[x]],
+                    prep.emo, "emotional.memory")})->rf.ie
+# collect r2's
+lapply(1:M,function(x){rf.ie[[x]][[2]]}) %>% unlist ->rf.r2.ie
+# collect rmse's
+lapply(1:M,function(x){rf.ie[[x]][[3]]}) %>% unlist ->rf.rmse.ie
+```
+
+- neutral memory: AUCi_sAA_2, stress_exposure
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(neutral.memory~AUCi_sAA_2+stress_exposure),
+                    dataset=imp.ims[[x]],
+                    prep.neu, "neutral.memory")})->rf.in
+# collect r2's
+lapply(1:M,function(x){rf.in[[x]][[2]]}) %>% unlist ->rf.r2.in
+# collect rmse's
+lapply(1:M,function(x){rf.in[[x]][[3]]}) %>% unlist ->rf.rmse.in
+```
+
+### recovery phase group
+- fear memory: non
+- emotional memory:AUCg_sAA_2 AUCg_VAS_anxiety_2 AUCi_VAS_mood_2
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(emotional.memory~AUCg_sAA_2+AUCg_VAS_anxiety_2+AUCi_VAS_mood_2),
+                    dataset=imp.des[[x]],
+                    prep.emo, "emotional.memory")})->rf.de
+# collect r2's
+lapply(1:M,function(x){rf.de[[x]][[2]]}) %>% unlist ->rf.r2.de
+# collect rmse's
+lapply(1:M,function(x){rf.de[[x]][[3]]}) %>% unlist ->rf.rmse.de
+```
+
+- neutral memory: age AUCi_sAA_1 AUCi_CORT_2 AUCg_VAS_mood_1 AUCi_stais_1
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='rf',
+                    model=expression(neutral.memory~age+AUCi_sAA_1+AUCi_CORT_2+AUCg_VAS_mood_1+AUCi_stais_1),
+                    dataset=imp.des[[x]],
+                    prep.neu, "neutral.memory")})->rf.dn
+# collect r2's
+lapply(1:M,function(x){rf.dn[[x]][[2]]}) %>% unlist ->rf.r2.dn
+# collect rmse's
+lapply(1:M,function(x){rf.dn[[x]][[3]]}) %>% unlist ->rf.rmse.dn
+```
+
+
+# Ensemble models: TM + RF
+- linear and non-linear terms in linear models (based on plots from boruta variables) (https://stats.stackexchange.com/questions/25975/how-to-add-second-order-terms-into-the-model-in-r)
+- Note. the polynomial terms are based on plot inspections
+
+### no stress group: predictors of context-dependency without acute stress
+
+####  neutral memory without stress
+
+- TM:
++ non
+- RF: 
++ HEXACO_co.mean ^ 3
++ VTCI_CO_total
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(neutral.memory~1+
+                                                          # RF
+                                                          poly(HEXACO_co.mean,3)+
+                                                          VTCI_CO_total),
+                    dataset=imp.nos[[x]], prep.neu,"neutral.memory")})->ens.nn
+# collect r2's
+lapply(1:M,function(x){ens.nn[[x]][[2]]}) %>% unlist -> ens.r2.nn
+# collect rmse's
+lapply(1:M,function(x){ens.nn[[x]][[3]]}) %>% unlist -> ens.rmse.nn
+```
+
+#### emotional memory without stress
+
+- TM:
++ Trait Anxiety x sAA x Cortisol
+- RF: 
++ HEXACO_ag.mean
++ AUCi_panas_PosA_1 ^ 2 
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(emotional.memory~1+
+                                                          # TM
+                                                          STAI_T_total:AUCi_sAA_1:AUCi_CORT_1 +
+                                                          # RF
+                                                          HEXACO_ag.mean+
+                                                          poly(AUCi_panas_PosA_1,2)),
+                    dataset=imp.nos[[x]], prep.emo,"emotional.memory")})->ens.ne
+# collect r2's
+lapply(1:M,function(x){ens.ne[[x]][[2]]}) %>% unlist -> ens.r2.ne
+# collect rmse's
+lapply(1:M,function(x){ens.ne[[x]][[3]]}) %>% unlist -> ens.rmse.ne
+```
+
+#### fear memory without acute stress
+
+- TM:
++ no predictors
+- RF: 
++ HEXACO_hh.mean ^ 3
++ AUCi_stais_2
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(fear.memory~1+
+                                                          # RF
+                                                          poly(HEXACO_hh.mean,3)+
+                                                          AUCi_stais_2),
+                    dataset=imp.nos[[x]], prep.fear.m,"fear.memory")})->ens.nf
+# collect r2's
+lapply(1:M,function(x){ens.nf[[x]][[2]]}) %>% unlist -> ens.r2.nf
+# collect rmse's
+lapply(1:M,function(x){ens.nf[[x]][[3]]}) %>% unlist -> ens.rmse.nf
+```
+
+### acute phase group: predictors of context-dependency ~ 30min after acute stress
+
+#### neutral memory ~30 min after acute stress
+
+- TM: 
++ cortisol (auci, d1)
+- RF: 
++ AUCi_sAA_2
++ stress_exposure
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(neutral.memory~1+
+                                                          # TM
+                                                          AUCi_CORT_1+
+                                                          # RF
+                                                          AUCi_sAA_2+ 
+                                                          stress_exposure), 
+                    dataset=imp.ims[[x]], prep.neu,"neutral.memory")})->ens.in
+# collect r2's
+lapply(1:M,function(x){ens.in[[x]][[2]]}) %>% unlist -> ens.r2.in
+# collect rmse's
+lapply(1:M,function(x){ens.in[[x]][[3]]}) %>% unlist -> ens.rmse.in
+```
+
+#### emotional memory ~30 min after acute stress
+
+- TM:
++ [life-time stress, Note, stress_exposure from theoretical model is replaced by JTV_total (from Boruta)]
+- RF:
++ JTV_total
++ HEXACO_hh.mean
++ AUCi_VAS_mood_2
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(emotional.memory~1+
+                                                          #RF (& TM)
+                                                          JTV_total+ 
+                                                          #RF
+                                                          HEXACO_hh.mean+
+                                                          AUCi_VAS_mood_2),
+                    dataset=imp.ims[[x]], prep.emo,"emotional.memory")})->ens.ie
+# collect r2's
+lapply(1:M,function(x){ens.ie[[x]][[2]]}) %>% unlist -> ens.r2.ie
+# collect rmse's
+lapply(1:M,function(x){ens.ie[[x]][[3]]}) %>% unlist -> ens.rmse.ie
+```
+
+#### fear memory ~30 min after acute stress
+
+- TM:
++ STAI_T_total:AUCi_CORT_1
++ stress_exposure:AUCi_sAA_1
+
+- RF:  JTV_total & HEXACO_extr.mean Boruta selected, but model NS in permutation tests (so not included in model)
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(fear.memory~1+
+                                                          #TM
+                                                          STAI_T_total:AUCi_CORT_1+
+                                                          #TM
+                                                          stress_exposure:AUCi_sAA_1
+                                                          ), 
+                    dataset=imp.ims[[x]], prep.fear.m,"fear.memory")})->ens.if
+# collect r2's
+lapply(1:M,function(x){ens.if[[x]][[2]]}) %>% unlist -> ens.r2.if
+# collect rmse's
+lapply(1:M,function(x){ens.if[[x]][[3]]}) %>% unlist -> ens.rmse.if
+```
+
+
+### recovery phase group: predictors of context-dependency ~2h after acute stress
+
+#### neutral memory ~2h after acute stress
+
+- TM:
++ Stress x sAA
++ Stress x Cortisol
+- RF: 
++ age
++ AUCi_sAA_1   [note (AUCi_sAA_1 not separately included because present in interaction TM)]
++ AUCi_CORT_2
++ AUCg_VAS_mood_1
++ AUCi_stais_1^2
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(neutral.memory~1+
+                                                          #TM
+                                                          stress_exposure:AUCi_CORT_1+
+                                                          stress_exposure:AUCi_sAA_1+
+                                                          #RF (AUCi_sAA_1 not separately included because present in interaction TM)
+                                                          age+
+                                                          AUCi_CORT_2+
+                                                          AUCg_VAS_mood_1+ 
+                                                          poly(AUCi_stais_1,2)),
+                    dataset=imp.des[[x]], prep.neu,"neutral.memory")})->ens.dn
+# collect r2's
+lapply(1:M,function(x){ens.dn[[x]][[2]]}) %>% unlist -> ens.r2.dn
+# collect rmse's
+lapply(1:M,function(x){ens.dn[[x]][[3]]}) %>% unlist -> ens.rmse.dn
+```
+
+#### emotional memory ~2h after acute stress
+
+- TM: 
++ no predictors
+- RF: 
++ AUCg_sAA_2 ^ 2
++ AUCg_VAS_anxiety_2 ^2
++ AUCi_VAS_mood_2
+
+```{r}
+lapply(1:M,function(x){
+  model.performance(seed, method='lm', model=expression(emotional.memory~1+
+                                                          #RF
+                                                          poly(AUCg_sAA_2,2)+
+                                                          poly(AUCg_VAS_anxiety_2,2)+
+                                                          AUCi_VAS_mood_2), 
+                    dataset=imp.des[[x]], prep.emo,"emotional.memory")})->ens.de
+# collect r2's
+lapply(1:M,function(x){ens.de[[x]][[2]]}) %>% unlist -> ens.r2.de
+# collect rmse's
+lapply(1:M,function(x){ens.de[[x]][[3]]}) %>% unlist -> ens.rmse.de
+```
+
+#### fear memory ~2h after acute stress
+
+- TM:
++ no predictors
+- RF:
++ no variables
+
+
+# Merge performance measures
+
+### R2: calculate mean R2
+```{r}
+# results matrix
+r2.table<-data.frame(matrix(nrow=23,ncol=5))
+colnames(r2.table)<-c('analysis', 'group','memory','m.r2',"sd.r2")
+
+# results predictions random forest
+r2.table[1,]<-c('RF', "N",'F', mean(rf.r2.nf), sd(rf.r2.nf))
+r2.table[2,]<-c('RF', "I",'F', NA, NA) # NS in permutation tests
+r2.table[3,]<-c('RF', "N",'E', mean(rf.r2.ne), sd(rf.r2.ne))
+r2.table[4,]<-c('RF', "I",'E', mean(rf.r2.ie), sd(rf.r2.ie))
+r2.table[5,]<-c('RF', "D",'E', mean(rf.r2.de), sd(rf.r2.de))
+r2.table[6,]<-c('RF', "N",'N', mean(rf.r2.nn), sd(rf.r2.nn))
+r2.table[7,]<-c('RF', "I",'N', mean(rf.r2.in), sd(rf.r2.in))
+r2.table[8,]<-c('RF', "D",'N', mean(rf.r2.dn), sd(rf.r2.dn))
+
+# results predictions linear model
+r2.table[9,]<-c('LM', "N",'E', mean(t.r2.ne), sd(t.r2.ne))
+r2.table[10,]<-c('LM', "I",'F', mean(t.r2.if), sd(t.r2.if))
+r2.table[11,]<-c('LM', "I",'E', mean(t.r2.ie), sd(t.r2.ie))
+r2.table[12,]<-c('LM', "I",'N', mean(t.r2.in), sd(t.r2.in))
+r2.table[13,]<-c('LM', "D",'N', mean(t.r2.dn), sd(t.r2.dn))
+
+# results predictions ensemble model: Linear models with polynomial terms
+r2.table[14,]<-c('ensemble', "N",'F', mean(ens.r2.nf), sd(ens.r2.nf))
+r2.table[15,]<-c('ensemble', "I",'F', mean(ens.r2.if), sd(ens.r2.if))
+r2.table[16,]<-c('ensemble', "N",'E', mean(ens.r2.ne), sd(ens.r2.ne))
+r2.table[17,]<-c('ensemble', "I",'E', mean(ens.r2.ie), sd(ens.r2.ie))
+r2.table[18,]<-c('ensemble', "D",'E', mean(ens.r2.de), sd(ens.r2.de))
+r2.table[19,]<-c('ensemble', "N",'N', mean(ens.r2.nn), sd(ens.r2.nn))
+r2.table[20,]<-c('ensemble', "I",'N', mean(ens.r2.in), sd(ens.r2.in))
+r2.table[21,]<-c('ensemble', "D",'N', mean(ens.r2.dn), sd(ens.r2.dn))
+# empty lines, better for layout plots
+r2.table[22,]<-c('LM', "N",'N', NA,NA) 
+r2.table[23,]<-c('LM', "D",'F', NA,NA)
+
+saveRDS(r2.table,'results/r2.table.5cv.RDS')
+readRDS('results/r2.table.5cv.RDS')->r2.table
+```
+
+### RMSE: calculate mean rsme
+```{r}
+# results matrix
+rmse.table<-data.frame(matrix(nrow=23,ncol=5))
+colnames(rmse.table)<-c('analysis', 'group','memory','m.rmse',"sd.rmse")
+
+# results predictions random forest
+rmse.table[1,]<-c('RF', "N",'F', mean(rf.rmse.nf), sd(rf.rmse.nf))
+rmse.table[2,]<-c('RF', "I",'F', NA,NA) # NS in permutation tests
+rmse.table[3,]<-c('RF', "N",'E', mean(rf.rmse.ne), sd(rf.rmse.ne))
+rmse.table[4,]<-c('RF', "I",'E', mean(rf.rmse.ie), sd(rf.rmse.ie))
+rmse.table[5,]<-c('RF', "D",'E', mean(rf.rmse.de), sd(rf.rmse.de))
+rmse.table[6,]<-c('RF', "N",'N', mean(rf.rmse.nn), sd(rf.rmse.nn))
+rmse.table[7,]<-c('RF', "I",'N', mean(rf.rmse.in), sd(rf.rmse.in))
+rmse.table[8,]<-c('RF', "D",'N', mean(rf.rmse.dn), sd(rf.rmse.dn))
+
+# results predictions linear model
+rmse.table[9,]<-c('LM', "N",'E', mean(t.rmse.ne), sd(t.rmse.ne))
+rmse.table[10,]<-c('LM', "I",'F', mean(t.rmse.if), sd(t.rmse.if))
+rmse.table[11,]<-c('LM', "I",'E', mean(t.rmse.ie), sd(t.rmse.ie))
+rmse.table[12,]<-c('LM', "I",'N', mean(t.rmse.in), sd(t.rmse.in))
+rmse.table[13,]<-c('LM', "D",'N', mean(t.rmse.dn), sd(t.rmse.dn))
+
+# results predictions ensemble model: Linear models with polynomial terms
+rmse.table[14,]<-c('ensemble', "N",'F', mean(ens.rmse.nf), sd(ens.rmse.nf))
+rmse.table[15,]<-c('ensemble', "I",'F', mean(ens.rmse.if), sd(ens.rmse.if))
+rmse.table[16,]<-c('ensemble', "N",'E', mean(ens.rmse.ne), sd(ens.rmse.ne))
+rmse.table[17,]<-c('ensemble', "I",'E', mean(ens.rmse.ie), sd(ens.rmse.ie))
+rmse.table[18,]<-c('ensemble', "D",'E', mean(ens.rmse.de), sd(ens.rmse.de))
+rmse.table[19,]<-c('ensemble', "N",'N', mean(ens.rmse.nn), sd(ens.rmse.nn))
+rmse.table[20,]<-c('ensemble', "I",'N', mean(ens.rmse.in), sd(ens.rmse.in))
+rmse.table[21,]<-c('ensemble', "D",'N', mean(ens.rmse.dn), sd(ens.rmse.dn))
+# empty lines, better for layout plots
+rmse.table[22,]<-c('LM', "N",'N', NA,NA) 
+rmse.table[23,]<-c('LM', "D",'F', NA,NA)
+
+saveRDS(rmse.table,'results/rmse.table.5cv.RDS')
+readRDS('results/rmse.table.5cv.RDS')->rmse.table
+```
+
+# Visualize model performance 
+of Linear models, random forest, and ensamble models
+```{r}
+# merge dataframes with goodness of fit measures (R2 and RMSE)
+full_join(r2.table,rmse.table, by=c("analysis", "group", "memory"))->merged.model.performance
+# change factor names and order
+merged.model.performance$analysis = factor(merged.model.performance$analysis, levels=c("LM","RF","ensemble"))
+merged.model.performance$memory = factor(merged.model.performance$memory, levels=c("F","E","N"), labels = c("Fearful","Emotional","Neutral"))
+merged.model.performance$group = factor(merged.model.performance$group, levels=c("I","D","N"), labels = c("Acute phase","Recovery phase","No stress"))
+# change variables to numeric
+merged.model.performance %>% mutate(across(c("m.r2", "sd.r2", "m.rmse", "sd.rmse"), as.numeric))->merged.model.performance
+
+# create a list with plot layout specifications
+plot.list<- list(
+  facet_grid(group ~ memory),
+  theme_minimal(),
+  rotate_x_text(angle = 45),
+  labs(x="")
+)
+
+# create R2 plot 
+merged.model.performance %>% 
+  ggplot(aes(x=analysis, y=(m.r2)))+
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=(m.r2)-(sd.r2),
+                    ymax=(m.r2)+(sd.r2))) +
+  plot.list +
+  labs(y= expression(paste('averaged ',R^{2})))->p.r2
+p.r2
+
+# create RMSE Plot
+merged.model.performance %>% 
+  ggplot(aes(x=analysis, y=(m.rmse)))+
+  geom_bar(stat = "identity")+
+  geom_errorbar(aes(ymin=(m.rmse)-(sd.rmse), 
+                    ymax=(m.rmse)+(sd.rmse))) +
+  plot.list +
+  labs(y='averaged RMSE') ->p.rmse
+p.rmse
+
+# Combine R2 and RMSE plots in one figure 
+p.r2 + p.rmse+ 
+  plot_annotation(title="Goodness-of-fit measures", tag_levels=c("A"))
+
+# save combined figure
+ggsave("results/Figure8.Averaged_goodness.of.fit.measures.5cv.tiff", device="tiff", dpi = 300, height = 5, width = 7, limitsize = T )
+```

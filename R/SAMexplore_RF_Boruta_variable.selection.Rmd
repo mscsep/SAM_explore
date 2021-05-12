@@ -1,0 +1,361 @@
+---
+title: "Variable selction based on variable importance in random forests"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+# Background
+
+*"Boruta is an all relevant feature selection wrapper algorithm, capable of working with any classification method that output variable importance measure (VIM); by default, Boruta uses Random Forest. The method performs a top-down search for relevant features by comparing original attributes' importance with importance achievable at random, estimated using their permuted copies, and progressively eliminating irrelevant features to stabilise that test."*[boruta r-docu](https://www.rdocumentation.org/packages/Boruta/versions/6.0.0/topics/Boruta)
+
+further reading on boruta: https://www.analyticsvidhya.com/blog/2016/03/select-important-variables-boruta-package/
+[boruta package](https://www.datacamp.com/community/tutorials/feature-selection-R-boruta)
+[useful boruta review](https://watermark.silverchair.com/bbx124.pdf?token=AQECAHi208BE49Ooan9kkhW_Ercy7Dm3ZL_9Cf3qfKAc485ysgAAAm0wggJpBgkqhkiG9w0BBwagggJaMIICVgIBADCCAk8GCSqGSIb3DQEHATAeBglghkgBZQMEAS4wEQQMMzKPDZoDXuNoe6pWAgEQgIICIPG8O1WRq6zMO-AN-xPBUoWaDnTclVVVefwA6rPH_wGCAKBL4BUCehQeIsyBDAACFohULG6GWk5CHhF2DzVKv0nl51_cSzpZHSgNGvw8XN93cxFKc6UddXCFhdvanqcZjDK06MRwEBbQ0qUHr_afGuV5MlkJbEUIlvYfk8JzYCvucNT0W3HPtfPRlPjA8hCHo-GoKx9IGi1pArc5HHNNA-zP5OZQaHZnI8QZLwbpwj6StmgoCSSy5Yla1yforU3HBFymhTOasqF_CUaf3_xEKn-iWY9hy_TUlrfT6i14IaXlkRxUNJWIoaF3ms8nJPcM3dt3LSMRx69K-T8PPJ90dwff43iq-0FVAs4iy7i7eVWOJ_5OAavrzhFcWzFIFts1_g9wdt7QZgULU_NxRPIEj8SjREyEHujk3uGCMwrPt9yUKPQOHOsckuco69uW9yscJAMBTM1r1PCNmuGD5mkqg9lXOtEuaB5OSE2A91h5jyrO2BVFfso6G2_lheey0ncsrE3zXle9DFd55FAwqeg24skDXDp5fHCsKKzrVk3N_-IpBPDaVeESmrim2z_exp6UqFgjQ4vAb79CKk4oCdft8bscPwIccUsPkk_AIQBlx2Y88ph3WyYrJJD0x7Y6X_gJDnydA1mAy_ls-FSEyQTxT2WO34kIXCrT1vz85Su4knSZlhQFLrqOWwijiuhKnbUx4V9Eug8n2NbegidCV_hpf1Q])
+
+# Set-up
+required packages and (preprocessed and imputed) data
+```{r setup, results='hide', message=FALSE}
+rm(list=ls())
+# load packages
+library(Boruta)
+# for export tables
+library(flextable)
+library(officer)
+
+library(knitr)
+library(kableExtra)
+```
+
+load imputed data, prepared for SAM_explore analysis RFs / Boruta / lm's
+```{r data, results='hide', message=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+seed=29180
+```
+
+
+# Tuning parameters Boruta
+
+## RF tuning
+To get an idea of the optimal tuning parameters for randomForest, the RMSE (with 5-fold cross-validation) of the models with parameters: 1) .mtry=c(2:56), and 2) .ntree=c(500, 1000, 1500, 2000, 2500) were checked on the 10th imputed data set of each experimental group (no-stress, delayed-stress, immediate-stress), for all memory types (fearful, neutral, emotional information). The Rmarkdown file "Tune_Boruta.Rmd" contains the code for these checks.
+
+In all experimental groups, for all memory types mtry=2 resulted in the lowest RMSE. For ntree optimal numbers were between 500-1500. Since an increase number of tree's will only improve performance 1500 was selected as minimum
+
+## adapting RF settings for Boruta
+Based on the tuning results we started with mtry=2 and ntree=1500. Boruta feature selection with these parameters, resulted in some tentative results (neither confirmed, nor rejected). We tested the effect of an increased ntree from 1500 to 2000 and maxrun from 1000 to 1500, however this did not affect the number of tentative variables. The number of tentative variables was in general very low and not present in all imputed datasets of a certain memory type or experimental group. 
+
+In this document, the tentative values are displayed in the variable selection plots from in each imputed dataset. However, we decided to use the TentativeRoughFix() function to make a decision on the tentative variables (features with a median importance higher then the maximal one of the the shadow attributes were confirmed others rejected) for majority voting.
+
+```{r boruta parameters}
+m.try=2
+n.tree=1500
+max.r=1000
+```
+
+
+# Step 1: Boruta Feature selection
+The Boruta feature selection is applied to each imputed dataset of an experimental group and Boruta objects are plotted via function below.
+```{r plot boruta}
+plot.boruta<-function(boruta_object){
+  plot(boruta_object, xlab = "", xaxt = "n")
+  lz<-lapply(1:ncol(boruta_object$ImpHistory),function(i)
+    boruta_object$ImpHistory[is.finite(boruta_object$ImpHistory[,i]),i])
+  names(lz) <- colnames(boruta_object$ImpHistory)
+  Labels <- sort(sapply(lz,median))
+  axis(side = 1,las=2,labels = names(Labels),
+       at = 1:ncol(boruta_object$ImpHistory), cex.axis = 0.7)
+}
+```
+
+## Boruta fear memory
+```{r boruta function fear memory}
+boruta.fear<-function(imp_list){
+  boruta.F<-list()
+  for(i in 1:M){        
+    prep.fear.m(imp_list[[i]])->RFfear
+    set.seed(seed)
+    boruta.fear <- Boruta(fear.memory~., data = RFfear, doTrace = 0, maxRun=max.r, mtry=m.try, ntree=n.tree)
+    # print results with tentatives
+    print(boruta.fear) #if there are tentative vars increase maxRuns (default = 100)
+    # lm(getConfirmedFormula(boruta.fear_train),RFfear)->fit1
+    # anova(fit1)
+    # boruta.fear_train$finalDecision
+    plot.boruta(boruta.fear)->plot
+    print(plot)
+    # fix tentative
+    TentativeRoughFix(boruta.fear)->boruta.fear2
+    #extract attributes (=results)
+    attStats(boruta.fear2)->results
+    results$varname<-rownames(results)
+    #bind results to list
+    results->boruta.F[[i]]
+  }
+  return(boruta.F)
+}
+```
+
+### No-stress group: fear memory
+```{r boruta fear memory no-stress}
+boruta.fear(imp.nos)->n_f
+saveRDS(n_f,"processed_data/n_f.RDS")
+# readRDS("processed_data/n_f.RDS")->n_f
+```
+
+### Immediate stress group: fear memory
+```{r boruta fear memory immediate stress}
+boruta.fear(imp.ims)->i_f
+saveRDS(i_f,"processed_data/i_f.RDS")
+# readRDS('processed_data/i_f.RDS')->i_f
+```
+
+### Delayed stress group: fear memory
+```{r boruta fear memory delayed stress}
+boruta.fear(imp.des)->d_f
+saveRDS(d_f,"processed_data/d_f.RDS")
+# readRDS('processed_data/d_f.RDS')->d_f
+```
+
+## Boruta emotional memory
+```{r boruta function emotional memory}
+boruta.emo<-function(imp_list){
+  boruta.E<-list()
+  for(i in 1:M){        
+    prep.emo(imp_list[[i]])->RFemo
+    set.seed(seed)
+    boruta.emo <- Boruta(emotional.memory~., data =RFemo , doTrace = 0, maxRun=max.r, mtry=m.try, ntree=n.tree)
+    # print results with tentatives
+    print(boruta.emo)
+    plot.boruta(boruta.emo)->plot
+    print(plot)
+    # fix tentative
+    TentativeRoughFix(boruta.emo)->boruta.emo2
+    #extract attributes (=results)
+    attStats(boruta.emo2)->results
+    #add rownames as variable
+    results$varname<-rownames(results)
+    #bind results to list
+    results->boruta.E[[i]] 
+  }
+  return(boruta.E)
+}
+```
+
+### No-stress group: emotional memory
+```{r boruta emotional memory no-stress}
+boruta.emo(imp.nos)->n_e
+saveRDS(n_e,'processed_data/n_e.RDS')
+# readRDS('processed_data/n_e.RDS')->n_e
+```
+
+### Immediate stress group: emotional memory
+```{r boruta emotional memory immediate stress}
+boruta.emo(imp.ims)->i_e
+saveRDS(i_e,'processed_data/i_e.RDS')
+# readRDS('processed_data/i_e.RDS')->i_e
+```
+
+### Delayed stress group: emotional memory
+```{r boruta emotional memory delayed stress}
+boruta.emo(imp.des)->d_e
+saveRDS(d_e,'processed_data/d_e.RDS')
+# readRDS('processed_data/d_e.RDS')->d_e
+```
+
+## Boruta neutral memory
+```{r boruta function neutral memory}
+boruta.neu<-function(imp_list){
+  boruta.N<-list()
+  for(i in 1:M){        
+    prep.neu(imp_list[[i]])->RFneu
+    set.seed(seed)
+    boruta.neu <- Boruta(neutral.memory~., data =RFneu , doTrace = 0, maxRun=max.r, mtry=m.try, ntree=n.tree)
+    # print results with tentatives
+    print(boruta.neu)
+    plot.boruta(boruta.neu)->plot
+    print(plot)
+    # fix tentative
+    TentativeRoughFix(boruta.neu)->boruta.neu
+    #extract attributes (=results)
+    attStats(boruta.neu)->results
+    #add rownames as variable
+    results$varname<-rownames(results)
+    #bind results to list
+    results->boruta.N[[i]]
+  }
+  return(boruta.N)
+}
+```
+
+### No-stress group: neutral memory
+```{r boruta neutral memory no-stress}
+boruta.neu(imp.nos)->n_n
+saveRDS(n_n,'processed_data/n_n.RDS')
+# readRDS('processed_data/n_n.RDS')->n_n
+```
+
+### Immediate stress group: neutral memory
+```{r boruta neutral memory immediate stress}
+boruta.neu(imp.ims)->i_n
+saveRDS(i_n,'processed_data/i_n.RDS')
+# readRDS('processed_data/i_n.RDS')->i_n
+```
+
+### Delayed stress group: neutral memory
+```{r boruta neutral memory delayed stress}
+boruta.neu(imp.des)->d_n
+saveRDS(d_n,'processed_data/d_n.RDS')
+# readRDS('processed_data/d_n.RDS')->d_n
+```
+
+
+# Step 2: Majority Votes (>=6)
+For each memory type are for each experimental group 10 matrices with boruta results. Of each matrix the variable names with their final decisions are extracted.
+```{r}
+calc_majority_vote<-function(results_list){
+  #create empty list
+  selected_list<-list()
+  #select varnames and decision from each imputed datasets
+  for(i in 1:M){
+    results_list[[i]] %>% select(varname, decision) ->selected_list[[i]]
+  }
+  #merge selected data from imputations in one dataframe by variable names
+  plyr::join_all(selected_list, by='varname')->df_majority
+  # add unique variable names
+  colnames(df_majority)<-c("varname", paste0("imp.",rep(1:10)))
+  # add column that indicate if a variable is more than 5 times confirmed
+  df_majority$majority_vote<- (rowSums(df_majority[,-1] == 'Confirmed')>5)
+  #return dataframe
+  return(df_majority)
+}
+```
+
+## No-stress group
+### Fear memory
+```{r}
+calc_majority_vote(n_f)->n_f_majority
+n_f_majority %>% filter(majority_vote == TRUE)
+n_f_majority %>% filter(majority_vote == TRUE) %>% select(varname)->no.stres.fear
+```
+
+### Emotional memory
+```{r}
+calc_majority_vote(n_e)->n_e_majority
+n_e_majority %>% filter(majority_vote == TRUE)
+n_e_majority %>% filter(majority_vote == TRUE) %>% select(varname)->no.stres.emo
+```
+
+### Neutral memory
+```{r}
+calc_majority_vote(n_n)->n_n_majority
+n_n_majority %>% filter(majority_vote == TRUE) 
+n_n_majority %>% filter(majority_vote == TRUE) %>% select(varname)->no.stres.neu
+```
+
+
+## Immediate stress group
+### Fear memory
+```{r}
+calc_majority_vote(i_f)->i_f_majority
+i_f_majority %>% filter(majority_vote == TRUE)
+i_f_majority %>% filter(majority_vote == TRUE) %>% select(varname)->im.stres.fear
+```
+
+### Emotional memory
+```{r}
+calc_majority_vote(i_e)->i_e_majority
+i_e_majority %>% filter(majority_vote == TRUE)
+i_e_majority %>% filter(majority_vote == TRUE) %>% select(varname)->im.stres.emo
+```
+
+### Neutral memory
+```{r}
+calc_majority_vote(i_n)->i_n_majority
+i_n_majority %>% filter(majority_vote == TRUE) 
+i_n_majority %>% filter(majority_vote == TRUE) %>% select(varname)->im.stres.neu
+```
+
+
+## Delayed stress group
+### Fear memory
+```{r}
+calc_majority_vote(d_f)->d_f_majority
+d_f_majority %>% filter(majority_vote == TRUE)
+d_f_majority %>% filter(majority_vote == TRUE) %>% select(varname)->de.stres.fear
+```
+
+### Emotional memory
+```{r}
+calc_majority_vote(d_e)->d_e_majority
+d_e_majority %>% filter(majority_vote == TRUE)
+d_e_majority %>% filter(majority_vote == TRUE) %>% select(varname)->de.stres.emo
+```
+
+### Neutral memory
+```{r}
+calc_majority_vote(d_n)->d_n_majority
+d_n_majority %>% filter(majority_vote == TRUE) 
+d_n_majority %>% filter(majority_vote == TRUE) %>% select(varname)->de.stres.neu
+```
+
+
+# Step 3: Summary tables
+
+```{r echo=FALSE}
+results.no.s <- qpcR:::cbind.na(no.stres.fear, no.stres.emo, no.stres.neu)
+colnames(results.no.s) <- c( "Fear",  "Emotional", "Neutral")
+results.im.s <- qpcR:::cbind.na(im.stres.fear, im.stres.emo, im.stres.neu)
+colnames(results.im.s) <- c( "Fear",  "Emotional", "Neutral")
+results.de.s <- qpcR:::cbind.na(de.stres.fear, de.stres.emo, de.stres.neu)
+colnames(results.de.s) <- c( "Fear",  "Emotional", "Neutral")
+```
+
+Kable tables
+```{r, echo=FALSE, message=FALSE}
+results.no.s %>%
+  kable(caption="No stress group") %>%
+  kable_styling()
+
+results.im.s %>%
+  kable(caption="Immedidate stress group") %>%
+  kable_styling()
+
+results.de.s %>%
+  kable(caption="Delayed stress group") %>%
+  kable_styling()
+```
+
+Export to Microsoft Word
+```{r echo=TRUE, results='hide'}
+# Use flextable layout to prepare table (for word)
+flextable(results.no.s) %>% #set_caption(., "No stress group", html_escape = T) %>% 
+  add_header_lines(., values = c("No stress group") ) %>%
+  colformat_char(.,na_str='')%>%
+  theme_vanilla(.)%>% autofit(.)->results.ns
+
+flextable(results.im.s) %>% #set_caption(., "Immediate stress group", html_escape = T) %>% 
+  add_header_lines(., values = c("Immedidate stress group") ) %>%
+  colformat_char(.,na_str='')%>%
+  theme_vanilla(.)%>% autofit(.)->results.is  
+
+flextable(results.de.s) %>% #set_caption(., "Delayed stress group", html_escape = T) %>% 
+  add_header_lines(., values = c("Delayed stress group") ) %>%
+  colformat_char(.,na_str='')%>%
+  theme_vanilla(.)%>% autofit(.)->results.ds  
+
+# export data to word   
+word_export <- read_docx()
+# body_add_par(word_export, value = "No stress group")
+body_add_flextable(word_export,  value = results.ns, align="left")  # https://stackoverflow.com/questions/49150272/exporting-several-tables-to-word-documents-using-r-package-flextable
+body_add_par(word_export, value = "")
+# body_add_par(word_export, value = "Immediate stress group")
+body_add_flextable(word_export, results.is, align="left")
+body_add_par(word_export, value = "")
+# body_add_par(word_export, value = "Delayed stress group")
+body_add_flextable(word_export, results.ds, align="left")
+print(word_export, 'results/Boruta_results.docx')
+```

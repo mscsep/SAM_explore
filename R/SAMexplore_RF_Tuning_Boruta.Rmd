@@ -1,0 +1,115 @@
+---
+title: "Tune_Boruta"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+Script to determine Boruta parameters that will be passed to randomForest (ntree & mtry) 
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library(randomForest)
+library(caret)
+```
+
+```{r data, results='hide', message=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+seed=123345
+```
+
+# Custom tume method
+
+All code (adapted) from: https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/
+At this website: "As such, only mtry parameter is available in caret for tuning. The reason is its effect on the final accuracy and that it must be found empirically for a dataset. The ntree parameter is different in that it can be as large as you like, and continues to increases the accuracy up to some point. It is less difficult or critical to tune and could be limited more by compute time available more than anything."
+
+```{r RF tuning custom method}
+#cutom method
+customRF <- list(type = "Regression", library = "randomForest", loop = NULL)
+customRF$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+}
+customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+  predict(modelFit, newdata)
+customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+  predict(modelFit, newdata, type = "prob")
+customRF$sort <- function(x) x[order(x[,1]),]
+customRF$levels <- function(x) x$classes
+
+# train model
+control <- trainControl(method="cv", number=5)
+tunegrid <- expand.grid(.mtry=c(2:56), .ntree=c(500, 1000, 1500, 2000, 2500))
+```
+
+# Tuning function
+```{r}
+tune.sam.expl<-function(df){
+  prep.fear.m(nos)->f.nos
+  set.seed(seed)
+  custom.fn <- train(fear.memory~., data=f.nos, method=customRF,  tuneGrid=tunegrid, trControl=control)
+  
+  prep.emo(nos)->e.nos
+  set.seed(seed)
+  custom.en <- train(emotional.memory~., data=e.nos, method=customRF,  tuneGrid=tunegrid, trControl=control)
+  
+  prep.neu(nos)->n.nos
+  set.seed(seed)
+  custom.nn <- train(neutral.memory~., data=n.nos, method=customRF,  tuneGrid=tunegrid, trControl=control)
+  
+  out<-list(custom.fn,custom.en,custom.nn)
+  return(out)
+}
+```
+
+Note, All parameters are only checked on 10th imputed dataset
+
+# No Stress Group Parameters
+```{r}
+imp.nos[[10]]->nos
+tune.sam.expl(nos)->ns.tune
+saveRDS(ns.tune,"processed_data/ns.tune")
+# readRDS("ns.tune")->ns.tune
+plot(ns.tune[[3]], main="No-stress: neutral")
+ns.tune[[3]]$bestTune
+plot(ns.tune[[2]], main="No-stress: emotional")
+ns.tune[[2]]$bestTune
+plot(ns.tune[[1]], main="No-stress: fear")
+ns.tune[[1]]$bestTune
+```
+For all memory types, best parameters mtry2 (ntree 500-1500). 
+
+# Immediate Stress Group Parameters
+```{r}
+imp.ims[[10]]->ims
+tune.sam.expl(ims)->is.tune
+saveRDS(is.tune,"processed_data/is.tune")
+# readRDS("is.tune")->is.tune
+plot(is.tune[[3]], main="Immediate-stress: neutral")
+is.tune[[3]]$bestTune
+plot(is.tune[[2]], main="Immediate-stress: emotional")
+is.tune[[2]]$bestTune
+plot(is.tune[[1]], main="Immediate-stress: fear")
+is.tune[[1]]$bestTune
+```
+For all memory types, best parameters mtry2 (ntree 500-1500).
+
+# Delayed Stress Group Parameters
+```{r}
+imp.des[[10]]->des
+tune.sam.expl(des)->ds.tune
+saveRDS(ds.tune,"processed_data/ds.tune")
+
+plot(ds.tune[[3]], main="Delayed-stress: neutral")
+ds.tune[[3]]$bestTune
+plot(ds.tune[[2]], main="Delayed-stress: emotional")
+ds.tune[[2]]$bestTune
+plot(ds.tune[[1]], main="Delayed-stress: fear")
+ds.tune[[1]]$bestTune
+```

@@ -1,0 +1,206 @@
+---
+title: "Distributions of variables in Theoretical Models"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+# Set-up: load data
+```{r setup, results='hide', message=FALSE}
+rm(list=ls())
+```
+
+```{r data, results='hide', message=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+```
+
+
+# Untransformed variables (i.e. before z-scores)
+
+## Covariates 
+
+### Age
+```{r untransformed age, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$age, main = paste0('imputation ',x))}
+```
+
+### BMI 
+```{r untransformed bmi, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$BMI, main = paste0('imputation ',x))}
+```
+
+## Independent variables
+
+### Childhood trauma
+```{r untransformed CTQ, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$JTV_total, main = paste0('imputation ',x))}
+```
+
+### Life-time stress
+```{r untransformed LSCR, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$LSC_event_total, main = paste0('imputation ',x))}
+```
+
+### Trait Anxiety
+```{r untransformed TA, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$STAI_T_total, main = paste0('imputation ',x))}
+```
+
+### AUCi sAA
+```{r untransformed saa, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$AUCi_sAA_1, main = paste0('imputation ',x))}
+```
+
+### AUCi Cortisol
+```{r untransformed cort, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$AUCi_CORT_1, main = paste0('imputation ',x))}
+```
+
+## Dependent variables
+
+### Emotional memory
+```{r untransformed emotional memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$emotional.memory, main = paste0('imputation ',x))}
+```
+
+### Neutral memory
+```{r untransformed neutral memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$neutral.memory, main = paste0('imputation ',x))}
+```
+
+### Fear memory
+```{r untransformed fear memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist2[[x]]$fear.memory, main = paste0('imputation ',x))}
+```
+
+
+# Standardized variables (i.e. after z-score transformations)
+
+## Covariates 
+
+### Age
+```{r standardized age, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$age, main = paste0('imputation ',x))}
+```
+
+### BMI 
+```{r standardized bmi, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$BMI, main = paste0('imputation ',x))}
+```
+
+## Independent variables
+
+### Childhood trauma
+```{r standardized CTQ, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$JTV_total, main = paste0('imputation ',x))}
+```
+
+### Life-time stress
+```{r standardized LSCR, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$LSC_event_total, main = paste0('imputation ',x))}
+```
+
+### Cumulative childhood + life-time stress
+```{r CTQ + LSCR, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$stress_exposure, main = paste0('imputation ',x))}
+```
+
+### Trait Anxiety
+```{r standardized TA, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$STAI_T_total, main = paste0('imputation ',x))}
+```
+
+### AUCi sAA
+```{r standardized saa, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$AUCi_sAA_1, main = paste0('imputation ',x))}
+```
+
+### AUCi Cortisol
+```{r standardized cort, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$AUCi_CORT_1, main = paste0('imputation ',x))}
+```
+
+## Dependent variables
+
+### Emotional memory
+```{r standardized emotional memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$emotional.memory, main = paste0('imputation ',x))}
+```
+
+### Neutral memory
+```{r standardized neutral memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$neutral.memory, main = paste0('imputation ',x))}
+```
+
+### Fear memory
+```{r standardized fear memory, echo=FALSE}
+par(mfrow = c(2, 5))
+for(x in 1:M){hist(implist3[[x]]$fear.memory, main = paste0('imputation ',x))}
+```
+
+
+# Considerations for Box-Cox transformation
+
+After inspection of the plots, the possibilities for a box-cox transformation were explored. Decided to only perform a z-transformation for all variables in TM (and RF), and not use box-cox or other transformations for TM, for the following reasons:
+
+1. Residuals in TM are normal with z-transformations
+2. Only age and childhood trauma have skewed distributions, other variables have normal distributions.
+  + Childhood trauma is not in TM (only the cumulative score of childhood trauma and life-time stress), and age is a covariate.
+  + transforming (only some) variables will only complicate interpretation
+3. [It is no problem for linear regression if independent parameters are skewed](https://www.researchgate.net/post/Skewed_data_for_regression_analysis)
+4. RF/Boruta is used next to the TM's to deal with non-linearity
+5. Regular BC transformation is not possible for variables with negative values (like the relative memory outcomes in our data), a more complicated 2 parameters BC transformation would be needed..
+
+```{r box-cox, eval=FALSE, include=FALSE}
+abs(implist2[[1]]$neutral.memory)
+ lm(neutral.memory~1+age+BMI+JTV_total*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1, data=implist2[[1]])->model1
+ lm(JTV_total~1+age+BMI, data=implist2[[1]])->model1
+
+ plot(model1)
+
+library(MASS)
+bc=boxcox(model1, lambda = seq(-3,3))  # error door negative values
+bc$x
+
+library(geoR)
+# 2 parameter box-cox? (for neg values?) https://www.researchgate.net/post/How_can_I_transform_a_data_series_with_negative_zero_and_positive_data_points
+boxcoxfit(implist2[[1]]$JTV_total)->bc2
+bc2
+plot(bc2)
+
+boxcoxfit(implist2[[1]]$STAI_T_total,lambda2 = T) ->bc3
+bc3
+bc3%>% plot
+
+boxcoxfit(implist3[[1]]$stress_exposure, lambda = seq(-3,3), lambda2 = T , hist=T) ->bc4
+plot(bc4)
+
+ library(car)
+ powerTransform(model1, family = 'bcnPower')
+ powerTransform(model1, family = 'bcnPower', gamma= implist2[[1]]$subject)
+```

@@ -1,0 +1,456 @@
+---
+title: "Follow-up Boruta findings: Random permutation statistics & PD, ALE plots"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+Follow-up Boruta findings: Random permutation statistics and PD and ALE plots to aid model interpretation 
+
+# Required packages and (preprocessed and imputed) data
+```{r setup}
+rm(list=ls())
+library(randomForest)
+library(rfUtilities) # for RF significance tests
+library(DALEX) # for PD plots
+library(arsenal) # for word tables 
+library(ggplot2) # for graphs
+library(RColorBrewer)
+library(patchwork)# to combine plots
+```
+
+load imputed data, prepared for SAM_explore analysis RFs 
+```{r load}
+source("R/SAMexplore_prepare.for.analyses.r")
+seed=3820
+# rf settings
+m.try=2
+n.tree=1500
+```
+
+
+# Background
+
+## RF interpretation
+For the interpretation of RF models can be done on incidence level (i.e. predict a case with certain characteristics using the model), with e.g. SHAP, lime, etc., or on data-set level (with partial, local & accumulated dependency plots). For more info see https://pbiecek.github.io/ema/shapley.html#SHAPRcode, https://pbiecek.github.io/ema/LIME.html, https://pbiecek.github.io/ema/ceterisParibus.html. Here data-set level interpretation is used.
+
+## RF significance
+
+Note, rf.significance() returns a different (model) R2 value then DALEX::model_performance() (used in "model.performance.evaluation" script). Exploration of data & function source code revealed that both functions use a different formula for the calculations:
+
+- rf.significance() uses the (median of) pseudo-R2 (rsq) calculated by the randomForest() function (and mse): rsq = 1 - mse / Var(y)
+- DALEX::model_performance() calculates R2 based on the difference between predicted and observed values: R2 = 1 -(mean((predicted - observed)^2) / (mean((mean(observed) - observed)^2)))
+
+The code in "SAMexplore_RF_R2_vs_PseudoR2.rmd" was used to check the origin of these differences.
+
+
+# Function RF significance & interpretation
+
+code to check, test, develop function below
+```{r settings to test rf.test.eval function, eval=FALSE, include=FALSE}
+# code for checking
+x=9
+model=expression(fear.memory~HEXACO_hh.mean+AUCi_stais_2)
+dataset=imp.nos[[x]]
+preprocessing.formula=prep.fear.m
+dependent.var = "fear.memory"
+imp.vars=c("HEXACO_hh.mean", "AUCi_stais_2")
+
+# settings for only NS model (to check distribution)
+model=expression(fear.memory~JTV_total+HEXACO_extr.mean)
+dataset=imp.ims[[x]]
+preprocessing.formula=prep.fear.m
+dependent.var = "fear.memory"
+imp.vars=c("JTV_total","HEXACO_extr.mean")
+```
+
+function 
+```{r rf.test.eval function}
+rf.test.eval<-function(seed, model, dataset, preprocessing.formula, dependent.var, imp.vars, ...){
+  # pre-processing
+  dataset2<-preprocessing.formula(dataset)
+  # fit random forest model
+  set.seed(seed)
+  rf.model <- randomForest::randomForest(eval(model), dataset2, 
+                                         mtry=m.try,
+                                         ntree=n.tree)
+  # significance
+  # test model significance with rf.significance() from rf.Utilities()
+  set.seed(seed)
+  rf.test <- rfUtilities::rf.significance(rf.model, dataset2[,imp.vars], 
+                                          nperm=1000,
+                                          ntree=n.tree, mtry=m.try)
+  # plot(rf.test)
+  # summary(rf.test)
+  # Note median() and var() report same results as print() en summary() on rf.significance object
+  cbind(median(rf.test$RandRsquare), var(rf.test$RandRsquare), bind_cols(rf.test[2:7]))->rf.statistics
+  names(rf.statistics)[1:3]<- c("Random pseudo-R-square median", "Random pseudo-R-square variance", "Model pseudo-R-square")
+  rf.statistics %>% mutate(group=as.character(unique(dataset$Condition)), # add variable for experimental group (was not present in dataset2)
+                           memory=dependent.var, # add variable for memory valence
+                           sig = pValue < pValueThreshold) -> rf.statistics
+  
+  # Interpretation
+  # transform to 'dalex explained model'
+  set.seed(seed)
+  DALEX:::explain(model=rf.model,
+                  data=dataset2,
+                  y=dataset2[,dependent.var],
+                  label="RF with Boruta selected variabels"
+  )->rf.model.exp
+  
+  # partial-dependence profiles (for plots) "mean Ceteris-paribus profiles
+  set.seed(seed)
+  model_profile(rf.model.exp, type="partial", variables = imp.vars)-> rf.pd
+  # https://pbiecek.github.io/ema/accumulatedLocalProfiles.html#ALPR
+  
+  # Local-dependence profiles (for plots)
+  set.seed(seed)
+  model_profile(rf.model.exp, type="conditional", variables = imp.vars)-> rf.ld
+  
+  # Accumulated-local profiles 
+  set.seed(seed)
+  model_profile(rf.model.exp, type="accumulated", variables = imp.vars)-> rf.al
+  
+  rf.pd$agr_profiles$`_label_` = "partial dependence"
+  rf.ld$agr_profiles$`_label_` = "local dependence"
+  rf.al$agr_profiles$`_label_` = "accumulated local dependence"
+  
+  out<-list(rf.statistics, # permuted significance RF
+            rf.pd, rf.ld, rf.al) # interpretation plots
+  
+  return(out)
+  
+}
+```
+
+
+
+# Function to combine interpretation plot for all imputations
+for inspiration on partial dependence after multiple imputation see: https://www.brodrigues.co/blog/2019-11-02-mice_exp/
+
+```{r}
+# # for checking
+# variable.to.plot<-"HEXACO_hh.mean"
+# data.list<-rf.nf
+
+rf.interpretation.plots<-function(data.list, variable.to.plot,x.name, memory, group){
+  # https://www.brodrigues.co/blog/2019-11-02-mice_exp/
+  
+  # partial dependence
+  lapply(1:M,function(x){(data.frame(data.list[[x]][[2]]$agr_profiles))}) %>% bind_rows(.,.id="imp") ->pdp
+  
+  #local dependence
+  lapply(1:M,function(x){(data.frame(data.list[[x]][[3]]$agr_profiles))}) %>% bind_rows(.,.id="imp") ->ldp
+  
+  # accumulated local dependency
+  lapply(1:M,function(x){(data.frame(data.list[[x]][[4]]$agr_profiles))}) %>% bind_rows(.,.id="imp") ->adp
+  
+  # bind data frames
+  rbind(pdp,ldp,adp)->dependence.data
+  dependence.data$X_label_<-factor(dependence.data$X_label_, 
+                                   levels = c( "partial dependence","local dependence","accumulated local dependence"))
+  
+  dependence.data$imp<-factor(dependence.data$imp,
+                              levels = c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"))
+  # create plot
+  dependence.data %>%
+    filter(X_label_ != "local dependence") %>%
+    filter(X_vname_ == variable.to.plot) %>%
+    droplevels() %>%
+    # filter(imp>1)
+    ggplot() + 
+    geom_line(aes(y = X_yhat_, x = X_x_, colour= X_label_, linetype = imp), size=0.4) +
+    theme_classic()+
+    labs(title= paste0(memory, " MC ~ \n", x.name),
+         caption=group,
+         #"Partial Dependence and Accumulated Local Effects for the random forest model", #local-dependence, #https://raw.githack.com/pbiecek/DALEX_docs/master/vignettes/DALEX_caret.html#22_model_performance
+         y=paste0("predicted MC"),
+         x=bquote("Z "[.(x.name)]),
+         linetype='imputation',
+         # linetype=NULL,# to remove label
+         colour="") +
+    scale_color_brewer(palette="Dark2")+
+    theme(plot.title = element_text(size = 9),
+          text = element_text(size=9))->plot
+  
+  return(plot)
+}
+
+# rf.nf[[4]][[5]] %>% plot()
+# plot(rf.nf[[4]][[2]], geom = "profiles") # plot data profiles
+```
+
+
+# Call and evaluate interpretation functions
+
+## no-stress
+
+- fear memory: HEXACO_hh.mean, AUCi_stais_2
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(fear.memory~HEXACO_hh.mean+AUCi_stais_2),
+               dataset=imp.nos[[x]],
+               prep.fear.m,"fear.memory",
+               imp.vars=c("HEXACO_hh.mean", "AUCi_stais_2"))})->rf.nf
+saveRDS(rf.nf, "processed_data/rf.nf.RDS")
+# readRDS("processed_data/rf.nf.RDS")->rf.nf
+# significance
+lapply(1:M,function(x){rf.nf[[x]][[1]]}) %>% bind_rows(., .id='imp') -> rf.nf.statistics
+
+# create plots for interpretation
+rf.interpretation.plots(rf.nf, "HEXACO_hh.mean", x.name="HEXACO honesty-humility", memory="Fearful", group = "No stress")->n.f.hhh
+rf.interpretation.plots(rf.nf, "AUCi_stais_2", x.name="STAI-S (AUCi)", memory="Fearful", group = "No stress")->n.f.stais.2
+```
+
+- emotional: HEXACO_ag.mean, AUCi_panas_PosA_1
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(emotional.memory~HEXACO_ag.mean+AUCi_panas_PosA_1),
+               dataset=imp.nos[[x]],
+               prep.emo,"emotional.memory",
+               imp.vars=c("HEXACO_ag.mean", "AUCi_panas_PosA_1"))})->rf.ne
+saveRDS(rf.ne, "processed_data/rf.ne.RDS")
+# readRDS("processed_data/rf.ne.RDS")->rf.ne
+# # significance
+lapply(1:M,function(x){rf.ne[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.ne.statistics
+
+rf.interpretation.plots(rf.ne, "HEXACO_ag.mean", x.name="HEXACO agreeableness", memory="Emotional", group = "No stress")->n.e.hag
+rf.interpretation.plots(rf.ne, "AUCi_panas_PosA_1", x.name="PANAS positive affect (AUCi)", memory="Emotional", group = "No stress")->n.e.pan.1
+```
+
+- neutral: HEXACO_co.mean, VTCI_CO_total
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(neutral.memory~HEXACO_co.mean+VTCI_CO_total),
+               dataset=imp.nos[[x]],
+               prep.neu,"neutral.memory",
+               imp.vars=c("HEXACO_co.mean", "VTCI_CO_total"))})->rf.nn
+saveRDS(rf.nn, "processed_data/rf.nn.RDS")
+# readRDS("processed_data/rf.nn.RDS")->rf.nn
+# significance
+lapply(1:M,function(x){rf.nn[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.nn.statistics
+
+rf.interpretation.plots(rf.nn, "HEXACO_co.mean", x.name="HEXACO conscientiousness", memory="Neutral", group = "No stress")->n.n.hco
+rf.interpretation.plots(rf.nn, "VTCI_CO_total", x.name="sf-TCI cooperativeness", memory="Neutral", group = "No stress")->n.n.vco
+```
+
+## acute phase 
+
+- fear memory: JTV_total HEXACO_extr.mean
+NS permutation statistics, no follow-up plots
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(fear.memory~JTV_total+HEXACO_extr.mean),
+               dataset=imp.ims[[x]],
+               prep.fear.m,"fear.memory",
+               imp.vars=c("JTV_total", "HEXACO_extr.mean"))})->rf.if
+saveRDS(rf.if, "processed_data/rf.if.RDS")
+# readRDS("processed_data/rf.if.RDS")->rf.if
+# significance
+# lapply(1:M,function(x){rf.if[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.if.statistics
+# NS (No interpretation plots!)
+# rf.interpretation.plots(rf.if, "JTV_total")->i.f.jtv
+# rf.interpretation.plots(rf.if, "HEXACO_extr.mean")->i.f.hex
+```
+
+- emotional memory: JTV_total HEXACO_hh.mean AUCi_VAS_mood_2
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(emotional.memory~JTV_total+HEXACO_hh.mean+AUCi_VAS_mood_2),
+               dataset=imp.ims[[x]],
+               prep.emo,"emotional.memory",
+               imp.vars=c("JTV_total", "HEXACO_hh.mean","AUCi_VAS_mood_2"))})->rf.ie
+saveRDS(rf.ie, "processed_data/rf.ie.RDS")
+readRDS("processed_data/rf.ie.RDS")->rf.ie
+# significance
+lapply(1:M,function(x){rf.ie[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.ie.statistics
+
+rf.interpretation.plots(rf.ie, "JTV_total", x.name="CTQ", memory="Emotional", group = "Acute phase")->i.e.jtv
+rf.interpretation.plots(rf.ie, "HEXACO_hh.mean", x.name="HEXACO honesty-humility", memory="Emotional", group = "Acute phase")->i.e.hhh
+rf.interpretation.plots(rf.ie, "AUCi_VAS_mood_2", x.name="VAS mood [positive-negative] (AUCi)", memory="Emotional", group = "Acute phase")->i.e.vm.2
+```
+
+- neutral memory: AUCi_sAA_2, stress_exposure
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(neutral.memory~AUCi_sAA_2+stress_exposure),
+               dataset=imp.ims[[x]],
+               prep.neu,"neutral.memory",
+               imp.vars=c("AUCi_sAA_2", "stress_exposure"))})->rf.in
+saveRDS(rf.in, "processed_data/rf.in.RDS")
+readRDS("processed_data/rf.in.RDS")->rf.in
+# significance
+lapply(1:M,function(x){rf.in[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.in.statistics
+
+rf.interpretation.plots(rf.in, "AUCi_sAA_2", x.name="\u03b1-amylase (AUCi)", memory="Neutral", group = "Acute phase")->i.n.saa.2
+rf.interpretation.plots(rf.in, "stress_exposure", x.name="CTQ + LSC-R", memory="Neutral", group = "Acute phase")->i.n.str
+i.n.str + labs(x=bquote("Z "["CTQ"]* " + " * "Z " ["LSC-R"]))->i.n.str
+```
+
+## delayed stress group
+
+- fear memory: no variables selected
+
+- emotional memory:AUCg_sAA_2 AUCg_VAS_anxiety_2 AUCi_VAS_mood_2
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(emotional.memory~AUCg_sAA_2+AUCg_VAS_anxiety_2+AUCi_VAS_mood_2),
+               dataset=imp.des[[x]],
+               prep.emo,"emotional.memory",
+               imp.vars=c("AUCg_sAA_2", "AUCg_VAS_anxiety_2","AUCi_VAS_mood_2"))})->rf.de
+saveRDS(rf.de, "processed_data/rf.de.RDS")
+readRDS("processed_data/rf.de.RDS")->rf.de
+# significance
+lapply(1:M,function(x){rf.de[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.de.statistics
+
+rf.interpretation.plots(rf.de, "AUCg_sAA_2", x.name="\u03b1-amylase (AUCg)", memory="Emotional", group = "Recovery phase")->d.e.saa.2
+rf.interpretation.plots(rf.de, "AUCg_VAS_anxiety_2", x.name="VAS arousal (AUCg)", memory="Emotional", group = "Recovery phase")->d.e.vasa.2
+rf.interpretation.plots(rf.de, "AUCi_VAS_mood_2", x.name="VAS mood [positive-negative] (AUCi)", memory="Emotional", group = "Recovery phase")->d.e.vasm.2
+```
+
+- neutral memory: age AUCi_sAA_1 AUCi_CORT_2 AUCg_VAS_mood_1 AUCi_stais_1
+```{r}
+lapply(1:M,function(x){
+  rf.test.eval(seed, 
+               model=expression(neutral.memory~age+AUCi_sAA_1+AUCi_CORT_2+AUCg_VAS_mood_1+AUCi_stais_1),
+               dataset=imp.des[[x]],
+               prep.neu,"neutral.memory",
+               imp.vars=c("age", "AUCi_sAA_1","AUCi_CORT_2","AUCg_VAS_mood_1","AUCi_stais_1"))})->rf.dn
+saveRDS(rf.dn, "processed_data/rf.dn.RDS")
+readRDS("processed_data/rf.dn.RDS")->rf.dn
+# significance
+lapply(1:M,function(x){rf.dn[[x]][[1]]}) %>% bind_rows(., .id='imp')-> rf.dn.statistics
+
+rf.interpretation.plots(rf.dn, "age", x.name="Age", memory="Neutral", group = "Recovery phase")->d.n.age
+rf.interpretation.plots(rf.dn, "AUCi_sAA_1", x.name="\u03b1-amylase (AUCi)", memory="Neutral", group = "Recovery phase")->d.n.saa.1
+rf.interpretation.plots(rf.dn, "AUCi_CORT_2", x.name="Cortisol (AUCi)", memory="Neutral", group = "Recovery phase")->d.n.cort.2
+rf.interpretation.plots(rf.dn, "AUCg_VAS_mood_1", x.name="VAS mood [positive-negative] (AUCg)", memory="Neutral", group = "Recovery phase")->d.n.vasm.1
+rf.interpretation.plots(rf.dn, "AUCi_stais_1", x.name="STAI-S (AUCi)", memory="Neutral", group = "Recovery phase")->d.n.stais.1
+```
+
+
+# Merge permutation statistics
+```{r}
+rbind(rf.nf.statistics,
+      rf.ne.statistics,
+      rf.nn.statistics,
+      
+      rf.if.statistics,
+      rf.ie.statistics,
+      rf.in.statistics,
+      
+      rf.de.statistics,
+      rf.dn.statistics)->table.permutation.tests
+
+table.permutation.tests$group<-factor(table.permutation.tests$group, 
+                                      levels = c("Immediate-Stress", "Delayed-Stress", "No-Stress"),
+                                      labels = c("Acute phase", "Recovery phase", "No stress"))
+
+table.permutation.tests$memory<-factor(table.permutation.tests$memory, 
+                                       levels = c("neutral.memory", "emotional.memory", "fear.memory"),
+                                       labels = c("Neutral", "Emotional", "Fearful"))
+
+# save 
+saveRDS(table.permutation.tests, "processed_data/permutation.statistics.rds")
+readRDS("processed_data/permutation.statistics.rds")->table.permutation.tests
+```
+
+Export permutation statistics to word
+https://rdrr.io/cran/arsenal/man/tableby.control.html
+```{r}
+mycontrols  <- arsenal::tableby.control( 
+  test=F, total=F,
+  na.rm=F,
+  stats.labels=list( meansd="Mean (SD)", range="Range"),
+  digits.n=NA ,
+  digits=2,
+)
+# create publication ready table
+arsenal::tableby(interaction(memory, group) ~ `Random pseudo-R-square median` + `Random pseudo-R-square variance` + `Model pseudo-R-square` + 
+                   pValue + sig,
+                 data = table.permutation.tests, 
+                 control = mycontrols) ->tab1
+
+tab1 %>% summary(.,title = "RF Permutation Statistics averaged over 10 imputed datasets",
+                 labelTranslations = c(sig = "p<0.05")
+)->word.table
+word.table
+
+# save tables to word
+arsenal::write2word(word.table, "results/boruta permutation statistics.doc")
+```
+
+
+# Merge follow-up plots 
+
+## Traits
+```{r trait plots}
+# immediate
+(i.n.str |  i.e.jtv |  i.e.hhh | plot_spacer())/
+# delayed
+(d.n.age | plot_spacer() | plot_spacer() |  plot_spacer()) /
+# no stress (basal)
+( n.n.hco | n.n.vco | n.e.hag | n.f.hhh ) ->p.trait
+
+p.trait & theme(legend.position = "bottom") ->p.trait
+
+p.trait[[1]] + plot_layout(tag_level = 'new')->p.trait[[1]]
+p.trait[[2]] + plot_layout(tag_level = 'new')->p.trait[[2]]
+p.trait[[3]] + plot_layout(tag_level = 'new')->p.trait[[3]]
+
+p.trait +
+  plot_annotation(title="A: acute phase, B: recovery phase, C: no stress (basal), ", tag_levels=c("A", "1")) + 
+  plot_layout(guides = "collect")
+
+ggsave("results/Figure.5.Boruta1.dependence.tiff", device="tiff", dpi = 300, height = 9, width = 11, limitsize = T )
+```
+
+## state d1: encoding
+```{r state encoding plots}
+# delayed
+(d.n.vasm.1 | d.n.stais.1| d.n.saa.1) /
+# no stress (basal)
+(n.e.pan.1 | plot_spacer() | plot_spacer() ) ->p.state.encoding
+
+p.state.encoding & theme(legend.position = "bottom") ->p.state.encoding
+
+p.state.encoding[[1]]+ plot_layout(tag_level = 'new')->p.state.encoding[[1]]
+p.state.encoding[[2]]+ plot_layout(tag_level = 'new')->p.state.encoding[[2]]
+
+p.state.encoding + plot_annotation(title="A: recovery phase, B: no stress (basal)", tag_levels=c("A", "1")) + 
+  plot_layout(guides = "collect")
+
+ggsave("results/Figure.6.Boruta2.dependence.tiff", device="tiff", dpi = 300, height = 6, width = 7.3, limitsize = T )
+```
+
+## state d2: retrieval
+```{r state retrieval}
+# immediate
+(i.n.saa.2 | i.e.vm.2| plot_spacer()| plot_spacer()) /
+# delayed
+(d.n.cort.2 | d.e.saa.2 | d.e.vasa.2 | d.e.vasm.2)/
+# no stress (basal)
+(n.f.stais.2 | plot_spacer() | plot_spacer() |plot_spacer())->p.state.retrieval
+
+p.state.retrieval & theme(legend.position = "bottom") ->p.state.retrieval
+
+p.state.retrieval[[1]]+ plot_layout(tag_level = 'new')->p.state.retrieval[[1]]
+p.state.retrieval[[2]]+ plot_layout(tag_level = 'new')->p.state.retrieval[[2]]
+p.state.retrieval[[3]]+ plot_layout(tag_level = 'new')->p.state.retrieval[[3]]
+
+p.state.retrieval + 
+  plot_annotation(title="A: acute phase, B: recovery phase, C: no stress (basal)", tag_levels=c("A", "1"))+ 
+  plot_layout(guides = "collect")
+
+ggsave("results/Figure.7.Boruta3.dependence.tiff", device="tiff", dpi = 300, height = 9, width = 11, limitsize = T )
+```

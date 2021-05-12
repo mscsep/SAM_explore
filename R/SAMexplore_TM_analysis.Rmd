@@ -1,0 +1,369 @@
+---
+title: "Theoretical linear model SAMexplore"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+editor_options: 
+  chunk_output_type: console
+---
+
+# Preparations
+
+The TM analysis of the SAM explore project.
+
+First the required packages are added.
+```{r setup, include=FALSE}
+rm(list=ls())
+# for imputed data
+library(mice)
+library(mitools)
+#export
+library(flextable) # To make publication ready tables for word, info: https://davidgohel.github.io/flextable/articles/overview.html
+library(officer)
+```
+
+```{r data, include=FALSE}
+# load imputed data, prepared for RFs / Boruta
+source("R/SAMexplore_prepare.for.analyses.r")
+```
+
+transform lists to 'imputationLists'
+```{r create implists}
+imputationList(imp.nos)->imp.nos2
+imputationList(imp.ims)->imp.ims2
+imputationList(imp.des)->imp.des2
+```
+
+
+# Regression Models
+
+## Variable selection
+Variable selection for this model mostly based on the model described by [Kok etal. 2016](https://www.sciencedirect.com/science/article/pii/S0165032716304530?via%3Dihub),
+where a step-wise regression is performed: 
+
+* step1: relevant background variables  (not their interaction?)
+* step2: a combined stress-exposure score (CTQ and LSC-r)
+* step3: trait anxiety is added
+
+Following this, for SAM explore:
+* age, BMI
+* Stress-exposure
+* Trait anxiety
+* AUCi sAA (d1)
+* AUCi cort (d1)
+
+The analysis is performed on imputed data (10 imputed datasets).
+
+## Assumption check 
+The assumptions for linear regression were checked on each imputed dataset, using "SAMexplore_assumptions_regression.RMD"
+```{r eval=FALSE, include=FALSE}
+# # Note: assumptions checked on
+# with(imp.data, lm(eval(dependent_var)~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->M.full
+# print(summary( pool(M.full)))
+```
+
+
+## Models & comparisons
+Models were compared using the Wald test (and pool.compare / D1) https://rdrr.io/cran/mice/man/pool.compare.html
+
+```{r formula with theoretical models}
+theoretical_models <- function(dependent_var, imp.data, file.export, TableName){
+  
+  # # Full model
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1+
+                      STAI_T_total:AUCi_CORT_1 +
+                      STAI_T_total:AUCi_sAA_1:AUCi_CORT_1+ 
+                      stress_exposure:AUCi_sAA_1:AUCi_CORT_1
+  ))->M.full
+  
+  # 3 way interaction (compared to full model): TA x sAA x Cort
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1+
+                      STAI_T_total:AUCi_CORT_1+
+                      # STAI_T_total:AUCi_sAA_1:AUCi_CORT_1+ # 3way
+                      stress_exposure:AUCi_sAA_1:AUCi_CORT_1
+  ) )->M.no.TA.sAA.CORT 
+  # Compare model without 3way to full model: effect of the 3way interaction
+  D1(M.full,M.no.TA.sAA.CORT)->TA.sAA.CORT
+  threeway.T.A.C<-c("Trait Anxiety x sAA x Cortisol", TA.sAA.CORT$result)
+  
+  # 3 way interaction (compared to full model): stress x sAA x cort
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1+
+                      STAI_T_total:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1:AUCi_CORT_1 #+ # 3way
+                    # stress_exposure:AUCi_sAA_1:AUCi_CORT_1
+  ))->M.no.St.sAA.CORT
+  # Compare model without 3way to full model: effect of the 3way interaction
+  D1(M.full,M.no.St.sAA.CORT)->St.sAA.CORT 
+  threeway.S.A.C<-c("Life Adversity x sAA x Cortisol",St.sAA.CORT$result)
+  
+  # Model without 3-way interaction
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1+
+                      STAI_T_total:AUCi_CORT_1 #+
+                    # STAI_T_total:AUCi_sAA_1:AUCi_CORT_1+ # 3way
+                    # stress_exposure:AUCi_sAA_1:AUCi_CORT_1 +
+  ))->M.no3way
+  
+  # 2 way effects (compared to model without 3way): TA x cort
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1 #+
+                    #  STAI_T_total:AUCi_CORT_1 #+
+  ))->M.no.TA.CORT
+  # Compare model without 2way to model without 3way interaction: effect of the 2way interaction
+  D1(M.no3way,M.no.TA.CORT)->TA.CORT 
+  twoway.T.C<-c("Trait Anxiety x Cortisol",TA.CORT$result)
+  
+  # 2 way effects (compared to model without 3way): TA x sAA
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      #  STAI_T_total:AUCi_sAA_1 #+
+                      STAI_T_total:AUCi_CORT_1
+  ))->M.no.TA.sAA
+  # Compare model without 2way to model without 3way interaction: effect of the 2way interaction
+  D1(M.no3way,M.no.TA.sAA)->TA.sAA
+  twoway.T.A<-c("Trait Anxiety x sAA",TA.sAA$result)
+  
+  # 2 way effects (compared to model without 3way): Stress x cort
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      #  stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1 +
+                      STAI_T_total:AUCi_CORT_1
+  ))->M.no.St.CORT
+  # Compare model without 2way to model without 3way interaction: effect of the 2way interaction
+  D1(M.no3way,M.no.St.CORT)->St.CORT
+  twoway.S.C<-c("Life Adversity x Cortisol", St.CORT$result)
+  
+  # 2 way effects (compared to model without 3way): stress x sAA
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      stress_exposure:STAI_T_total+ # 2 way
+                      # stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1 +
+                      STAI_T_total:AUCi_CORT_1
+  ))->M.no.St.sAA
+  # Compare model without 2way to model without 3way interaction: effect of the 2way interaction
+  D1(M.no3way,M.no.St.sAA)->St.sAA
+  twoway.S.A<-c("Life Adversity x sAA", St.sAA$result)
+  
+  # 2 way effects (compared to model without 3way): stress x TA 
+  with(imp.data, lm(eval(dependent_var)~1+
+                      age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                      # stress_exposure:STAI_T_total+ # 2 way
+                      stress_exposure:AUCi_sAA_1+
+                      stress_exposure:AUCi_CORT_1+
+                      STAI_T_total:AUCi_sAA_1 +
+                      STAI_T_total:AUCi_CORT_1 #+
+  ))->M.no.St.TA
+  # Compare model without 2way to model without 3way interaction: effect of the 2way interaction
+  D1(M.no3way,M.no.St.TA)->St.TA
+  twoway.S.T<-c("Life Adversity x Trait Anxiety", St.TA$result)
+  
+  # Model without 2 way interactions (= only main effects) 
+  with(imp.data, lm(eval(dependent_var)~1+age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1#+ #main effects
+  ))->M.no2way 
+  
+  # Main effect: CORT
+  with(imp.data, lm(eval(dependent_var)~1+age+BMI+
+                      stress_exposure+
+                      STAI_T_total+
+                      AUCi_sAA_1#+
+                    # AUCi_CORT_1#+ #main effects
+  ))->M.Cort
+  # Compare model without variable to model without 2way interaction: main effect of variable
+  D1(M.no2way,M.Cort)->mCORT
+  main.C<-c("Cortisol", mCORT$result)
+  
+  # Main effect: sAA
+  with(imp.data, lm(eval(dependent_var)~1+age+BMI+
+                      stress_exposure+
+                      STAI_T_total+
+                      # AUCi_sAA_1#+
+                      AUCi_CORT_1#+ #main effects
+  ))->M.sAA
+  # Compare model without variable to model without 2way interaction: main effect of variable
+  D1(M.no2way,M.sAA)->msAA
+  main.A<-c("sAA", msAA$result)
+  
+  # Main effect: TA
+  with(imp.data, lm(eval(dependent_var)~1+age+BMI+
+                      stress_exposure+
+                      # STAI_T_total+
+                      AUCi_sAA_1+
+                      AUCi_CORT_1#+ #main effects
+  ))->M.TA
+  # Compare model without variable to model without 2way interaction: main effect of variable
+  D1(M.no2way,M.TA)->mTA
+  main.T<-c("Trait Anxiety", mTA$result)
+  
+  # Main effect: stress
+  with(imp.data, lm(eval(dependent_var)~1+age+BMI+
+                      #stress_exposure+
+                      STAI_T_total+
+                      AUCi_sAA_1+
+                      AUCi_CORT_1#+ #main effects
+  ))->M.ST
+  # Compare model without variable to model without 2way interaction: main effect of variable
+  D1(M.no2way,M.ST)->mST
+  main.S<-c("Life Adversity", mST$result)
+  
+  # # Collect results of model comparisons in vectors
+  results <- data.frame(rbind(
+    # hypothesized interaction in TM
+    threeway.T.A.C,
+    threeway.S.A.C,
+    twoway.S.A,
+    twoway.S.C,
+    twoway.T.A,
+    twoway.T.C,
+    main.A,
+    main.C ,
+    # additional interactions
+    twoway.S.T,
+    main.S,
+    main.T))
+  
+  colnames(results) <- c( "Model",  "Wald statistic (D1)", "df1",  "df2",    "P(>F)", "RIV")
+  results %>% mutate_at(. ,c(2:6), as.character) %>% mutate_at(. ,c(2:6), as.numeric) ->results
+  
+  # Use flextable layout to prepare table (for word)
+  flextable(results) %>% 
+    colformat_num(x=.,
+                  j = c(2,4,5,6),
+                  big.mark = "",
+                  digits = 2) %>% 
+    colformat_num(x=.,j = c( "df1"),big.mark = "",digits = 0) %>%
+    set_caption(., TableName, html_escape = T)%>%
+    theme_vanilla(.)%>%
+    bold(., i= ~`P(>F)` < 0.07 , j="P(>F)") %>%
+    autofit(.)->results.table
+  
+  # if you want individual tables to word
+  if (file.export == T){
+    doc <- read_docx()
+    doc <- body_add_flextable(doc, value = results.table, align="center")
+    print(doc, target = paste0("results/",TableName, date(),".docx"))
+  }
+  
+  return(results.table)  
+}
+
+```
+
+
+# No Stress group
+## Results
+- 3-way interaction between trait anxiety * sAA (learning) * cortisol (learning) on emotional memory
+
+```{r call function no stress, echo=FALSE}
+theoretical_models(sym("emotional.memory"), imp.nos2, F,"No Stress - Emotional MC" ) ->emo_no
+emo_no
+theoretical_models(sym("neutral.memory"), imp.nos2, F,"No Stress - Neutral MC" ) ->neu_no
+neu_no
+theoretical_models(sym("fear.memory"), imp.nos2 , F,"No Stress - Fearful MC") ->feM_no
+feM_no
+theoretical_models(sym("fear.learning"), imp.nos2 , F,"No Stress - Fearful Learning") ->feL_no
+feL_no
+```
+
+
+# Acute phase stress response group
+## Results
+- Main effect cumulative stress-exposure during life on emotional memory contextualization immediately after stress
+- Main effect cortisol day1 (learning) on neutral memory contextualization immediately after stress
+- Two way interaction stress-exposure x sAA (learning) and trait anxiety x cortisol (learning) on Fearful MC after stress
+- no effects on Fearful learning after stress
+
+```{r call function Acute phase stress response, echo=FALSE}
+theoretical_models(sym("emotional.memory"), imp.ims2 , F,"Acute phase stress response - Emotional MC") ->emo_im
+emo_im
+theoretical_models(sym("neutral.memory"), imp.ims2, F,"Acute phase stress response - Neutral MC" ) ->neu_im
+neu_im
+theoretical_models(sym("fear.memory"), imp.ims2 , F,"Acute phase stress response - Fearful MC") ->feM_im
+feM_im
+theoretical_models(sym("fear.learning"), imp.ims2, F,"Acute phase stress response - Fearful Learning" ) ->feL_im
+feL_im
+```
+
+
+# Recovery phase stress responses
+## Results
+- 2h after stress, no effect on emotional memory, Fearful memory or Fearful learning
+- Two way interaction stress exposure x sAA (learning) and stress exposure x Cortisol (learning) on neutral memory contextualization
+
+```{r call function Recovery phase stress responses, echo=FALSE}
+theoretical_models(sym("emotional.memory"), imp.des2, F,"Recovery phase stress responses - Emotional MC" ) ->emo_de
+emo_de
+theoretical_models(sym("neutral.memory"), imp.des2, F,"Recovery phase stress responses - Neutral MC" ) ->neu_de
+neu_de
+theoretical_models(sym("fear.memory"), imp.des2 , F,"Recovery phase stress responses - Fearful MC") ->feM_de
+feM_de
+theoretical_models(sym("fear.learning"), imp.des2, F,"Recovery phase stress responses - Fearful Learning" ) ->feL_de
+feL_de
+```
+
+>  RIV: relative increase in variance due to nonresponse  https://rdrr.io/cran/mitml/man/testModels.html
+can be interpreted as the proportion of the variation attributable to the missing data [https://stefvanbuuren.name/fimd/sec-whyandwhen.html]
+
+# Combine for Word-export
+
+```{r word export}
+word_export <- read_docx()
+body_add_flextable(word_export, neu_no)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, emo_no)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, feM_no)
+# body_add_par(word_export, value = "")
+# body_add_flextable(word_export, feL_no)
+
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, neu_im)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, emo_im)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, feM_im)
+
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, neu_de)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, emo_de)
+body_add_par(word_export, value = "")
+body_add_flextable(word_export, feM_de)
+
+print(word_export, target = paste0("results/TM_statistics.2", date(),".docx"))
+```

@@ -1,0 +1,436 @@
+---
+title: "Assumption checks Theoretical Models"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+---
+
+### Set-up
+Required packages are included
+```{r setup, results='hide', message=FALSE}
+rm(list=ls())
+library(mice)
+library(mitools)
+```
+
+Data is loaded by sourcing an external r-script.
+*Note, ```source``` only works properly in an R markdown file, if Rstudio > Tools > Global options > R Markdown > evaluate chunks in directory = project.
+([reference](https://stackoverflow.com/questions/34029611/how-to-use-objects-from-global-environment-in-rstudio-markdown)) AND if ```source``` is not in 'setup' chunk*
+
+```{r data, results='hide', message=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+```
+
+The lists with imputed data are transformed to type 'imputationLists'
+```{r create implists, results='hide'}
+imputationList(imp.nos)->imp.nos2
+imputationList(imp.ims)->imp.ims2
+imputationList(imp.des)->imp.des2
+```
+
+# Assumption checks for linear regression 
+
+Linear regression makes several assumptions about the data [reference](http://www.sthda.com/english/articles/39-regression-model-diagnostics/161-linear-regression-assumptions-and-diagnostics-in-r-essentials/), such as :
+
+* Linearity of the data. The relationship between the predictor (x) and the outcome (y) is assumed to be linear.
+* Normality of residuals. The residual errors are assumed to be normally distributed.
+* Homogeneity of residuals variance. The residuals are assumed to have a constant variance (homoscedasticity)
+* Independence of residuals error terms.
+
+The diagnostic plots show residuals in four different ways:
+
+1. Residuals vs Fitted. Used to check the linear relationship assumptions. A horizontal line, without distinct patterns is an indication for a linear relationship, what is good.
+  + "Note that, if the residual plot indicates a non-linear relationship in the data, then a simple approach is to use non-linear transformations of the predictors, such as log(x), sqrt(x) and x^2, in the regression model."
+2. Normal Q-Q. Used to examine whether the residuals are normally distributed. It is good if residuals points follow the straight dashed line.
+3. Scale-Location (or Spread-Location). Used to check the homogeneity of variance of the residuals (homoscedasticity). Horizontal line with equally spread points is a good indication of homoscedasticity. 
+  + "A possible solution to reduce the heteroscedasticity problem is to use a log or square root transformation of the outcome variable (y)."
+4. Residuals vs Leverage. Used to identify influential cases, that is extreme values that might influence the regression results when included or excluded from the analysis. 
+  + outlier: extreme outcome value
+  + high leverage points: extreme predictor values [look for points outside dashed line]
+
+More diagnostics info: https://www.statmethods.net/stats/rdiagnostics.html
+
+
+# Linear models
+Assumptions are checked for the full models on the four memory types, per experimental condition (code based on [link]( http://www.sthda.com/english/articles/39-regression-model-diagnostics/161-linear-regression-assumptions-and-diagnostics-in-r-essentials/#regression-assumptions))
+
+```{r define full models, results='hide'}
+# Neutral Memory
+with(imp.nos2, lm(neutral.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ns.neu
+# summary(pool(ns.neu))  # for results
+with(imp.ims2, lm(neutral.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->is.neu
+with(imp.des2, lm(neutral.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ds.neu
+
+# Emotional memory
+with(imp.nos2, lm(emotional.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ns.emo
+with(imp.ims2, lm(emotional.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->is.emo
+with(imp.des2, lm(emotional.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ds.emo
+
+# Fear memory
+with(imp.nos2, lm(fear.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ns.fear.m
+with(imp.ims2, lm(fear.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->is.fear.m
+with(imp.des2, lm(fear.memory~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ds.fear.m
+
+# Fear learning
+with(imp.nos2, lm(fear.learning~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ns.fear.l
+with(imp.ims2, lm(fear.learning~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->is.fear.l
+with(imp.des2, lm(fear.learning~1+age+BMI+stress_exposure*STAI_T_total*AUCi_sAA_1*AUCi_CORT_1))->ds.fear.l
+```
+
+### Collinearity of main effects
+
+Multicollinearity by interaction effects can be ignored: https://statisticalhorizons.com/multicollinearity
+https://www.researchgate.net/post/Can_I_keep_interaction_term_without_original_terms_to_avoid_multicollinearity
+https://www.researchgate.net/post/Can_anyone_recommend_a_method_to_deal_with_interaction_effects_and_multicollinearity
+https://statisticsbyjim.com/regression/multicollinearity-in-regression-analysis/#:~:text=Subscribe,model%20and%20interpret%20the%20results.
+
+
+```{r Collinearity}
+# ?car::vif
+ # M=1
+ # i=1
+ # j=1
+
+vi.data.frame<-data.frame(matrix(nrow=1, ncol=9))
+colnames(vi.data.frame)<- c("imputation", "dataset", "outcome", "age", "BMI", "LA", "TA", "sAA", "cort")
+vi.data.frame
+k=1 # counter for row in outcome dataset (must be outside the loop below)
+
+for(N in 1:M){
+ # print(N)
+ datasets<-list(imp.nos[[N]], imp.ims[[N]], imp.des[[N]])
+ names(datasets)<-c("NoStress", "ImmediateStress", "DelayedStress")
+ outcomes<-list("neutral.memory", "emotional.memory", "fear.memory")
+ 
+ 
+ for(i in 1:length(datasets)){
+    for(j in 1: length(outcomes)){
+      # print imputation number
+      vi.data.frame[k,1]<-N
+      
+      # Print names current dataset & outcome
+      # print(c(outcomes[[j]], names(datasets)[[i]]))
+      
+      vi.data.frame[k,2]<-names(datasets)[[i]]
+      vi.data.frame[k,3]<-outcomes[[j]]
+      
+      # define main effects model
+      lm(get(outcomes[[j]])~1+age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1, data=datasets[[i]])->model
+      # print VI
+      car::vif(model)-> vi.data.frame[k,4:9]
+      
+      # print(car::vif(model) %>% data.frame())
+      # alternative also statistics?
+      # print(mctest(model)) # from library(mctest)
+      k=k+1
+    }
+  }
+}
+
+vi.data.frame
+str(vi.data.frame)
+
+# Maximal VI
+vi.data.frame[,4:9] %>% max() %>% round(.,4)
+
+# minimal VI
+vi.data.frame[,4:9] %>% min() %>% round(.,4)
+
+# https://statisticsbyjim.com/regression/multicollinearity-in-regression-analysis/#:~:text=Subscribe,model%20and%20interpret%20the%20results.
+# VI=1 (no); VI 1-5 moderate (no correction needed); VI > 5 (problematic)
+```
+
+## Diagnostic Plots no-stress group
+### Outcome 1: Neutral memory
+
+```{r no-stress neutral, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ns.neu[[i]], main = paste0("NS CMTn imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL ok; RL: 26, 9 (en 32) 'outside' cooks distance
+- imp2: idem
+- imp3: RF; Q-Q; SL ok; RL: 35, 9, 39 'outside' cooks distance
+- imp3: RF; Q-Q; SL ok; RL: 26 29 (en 10) 'outside' cooks distance
+- imp4: RF; Q-Q; SL ok; RL: 26, 9 'outside' cooks distance
+- imp5: RF; Q-Q; SL ok; RL: 26 9, 32 'outside' cooks distance
+- imp5: RF; Q-Q; SL ok; RL: 34, 9 'outside' cooks distance
+- imp6: RF; Q-Q; SL ok; RL: 26 9, 32 'outside' cooks distance
+- imp7: RF; Q-Q; SL ok; RL: 26 9, 32 'outside' cooks distance
+- imp8: RF; Q-Q; SL ok; RL: 26 9, 32 'outside' cooks distance
+- imp9: RF; Q-Q; SL ok; RL: 26 9, (39) 'outside' cooks distance
+- imp10: RF; Q-Q; SL ok; RL: 26 9, (32) 'outside' cooks distance
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+3. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.nos[[2]]$subject[c(9,26)]
+```
+
+
+### Outcome 2: Emotional memory
+```{r no-stress emotional, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ns.emo[[i]], main = paste0("NS CMTe imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL RL: ok
+- imp2 idem
+- imp3 idem
+- imp4 idem + 26 at line cooks distance
+- imp5: RF; Q-Q; SL RL: ok
+- imp 6; idem + 26 at line cooks distance
+- imp 7-10: RF; Q-Q; SL RL: ok
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+3. log() srqt() transformations tried, no difference.
+
+### Outcome 3: Fear learning
+```{r no-stress fear learning, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ns.fear.l[[i]], main = paste0("NS Fl imp", i))}
+```
+
+#### Summary
+
+for all: QQ ok; RS & SL no straight, but no effect of log() of srqt() transformation
+- imp1: RF, QQ, SL, RL all ok
+- imp2: b9 'outside'
+- imp3: 9 'outside'
+- imp4: cooks (26 tegen), 9 'outside' line
+- imp5: RF, QQ, SL, RL all ok
+- imp6: cooks 42, 9 'outside' line
+- imp7: cooks 9 'outside' line
+- imp8: cooks 42, 9 'outside' line
+- imp9: cooks 42/6/29 'outside' line
+- imp10:  QQ - LR ok
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+3. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.nos[[2]]$subject[9]
+```
+
+### Outcome 4: Fear memory
+```{r no-stress fear memory, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ns.fear.m[[i]], main = paste0("NS Fm imp", i))}
+# plot(neu_ns_full)
+# #cooks distance
+# plot(neu_ns_full, 4)
+# #A rule of thumb is that an observation has high influence if Cook’s distance exceeds 4/(n - p - 1)(P. Bruce and Bruce 2017), # where n is the number of observations and p the number of predictor variables.
+# 4/( nrow(NoS) - 6 -1)
+```
+
+#### Summary
+
+- imp1: RF, QQ, SL, RL all ok
+- imp2: RF, QQ, SL, RL all ok
+- imp3: RF, QQ, SL ok,  RL: pp26 outside cooks distance
+- imp4-6: RF, QQ, SL, RL all ok
+- imp7-8: RF, QQ, SL ok,  RL: pp26 outside cooks distance
+- imp9: RF, QQ, SL, RL all ok
+- imp10: RF, QQ, SL ok,  RL: pp42 on line 
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+
+## Diagnostic Plots immediate stress group
+Note. some NA's in residuals vs leverage plot, due to 0's (warning message: In sqrt(crit * p * (1 - hh)/hh) : NaNs produced). No problem for checking.
+
+### Outcome 1: Neutral memory
+```{r immediate-stress, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(is.neu[[i]], main = paste0("IS CMTn imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL ok; RL: 24, 16 'outside' cooks distance
+- imp2: idem
+- imp3: idem
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+
+### Outcome 2: Emotional memory
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(is.emo[[i]], main = paste0("IS CMTe imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL ok; RL: 13, 16, 24 'outside' cooks distance
+- imp2 etc idem
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+
+### Outcome 3: Fear learning
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(is.fear.l[[i]], main = paste0("IS Fl imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL; RL all ok
+- imp2: RF; Q-Q; SL; RL 24 outside cooks distance
+- imp3: RF; Q-Q; SL; RL 24, 16 (numbers not readable?)
+- imp4: RF; Q-Q; SL; RL 24, 16, 33 outside cooks distance
+- imp5: RF; Q-Q; SL; RL all ok
+- imp6: RF; Q-Q; SL; RL 24, 16 
+- imp7: RF; Q-Q; SL; RL all ok
+- imp8: RF; Q-Q; SL; RL 24, 16 
+- imp9: RF; Q-Q; SL; RL 24, 16 (just 'outside' line)
+- imp10: RF; Q-Q; SL; RL 24, 16, 33 outside cooks distance
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.ims[[2]]$subject[c(16,24)]
+```
+
+
+### Outcome 4: Fear memory
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(is.fear.m[[i]], main = paste0("IS Fm imp", i))}
+```
+
+#### Summary
+
+- imp1: RF; Q-Q; SL; RL 33 24 (31) outside cooks distance line
+- imp2: RF; Q-Q; SL; RL 33 24 
+- imp3: RF; Q-Q; SL; RL 33 24 
+- imp4: RF; Q-Q; SL; RL 33 24 (31) 
+- imp5: RF; Q-Q; SL; RL 33 24 (31) 
+- imp6: RF; Q-Q; SL; RL 33 24 14
+- imp7: RF; Q-Q; SL; RL 33 24 14
+- imp8: RF; Q-Q; SL; RL 33 24 (31) 
+- imp9: RF; Q-Q; SL; RL 33 24 (16 at line)
+- imp10: RF; Q-Q; SL; RL 31, 33, 24
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.ims[[2]]$subject[c(33,24)]
+```
+
+
+## Diagnostic Plots delayed stress group
+
+### Outcome 1: Neutral memory
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ds.neu[[i]], main = paste0("DS CMTn imp", i))}
+```
+
+#### Summary
+
+RF / SL no straight line, bu no improvement with log(), sqrt() (in all imputations)
+- imp1: 36 outside cooks distance (27 at line)
+- imp2-10 idem
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+3. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.des[[2]]$subject[36]
+```
+
+### Outcome 2: Emotional memory
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ds.emo[[i]], main = paste0("DS CMTe imp", i))}
+```
+
+#### Summary
+
+- imp 1;10 RF, QQ, SL ok, RL 27 just 'outside' line
+
+Note, the numbers are row numbers, not subject codes!
++ subject codes are:
+```{r}
+imp.des[[2]]$subject[27]
+```
+
+### Outcome 3: Fear learning
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ds.fear.l[[i]], main = paste0("DS Fl imp", i))}
+```
+
+#### Summary
+
+- imp1: RF, QQ, SL ok, RL 28, 23 (4 just) 'outside' line
+- imp2: RF, QQ, SL ok, RL 28, 22
+- imp3: RF, QQ, SL ok, RL 28, 23
+- imp4: RF, QQ, SL ok, RL 28, (36)
+- imp5: RF, QQ, SL ok, RL 28
+- imp6: RF, QQ, SL ok, RL 28
+- imp7: RF, QQ, SL ok, RL (28)
+- imp8: RF, QQ, SL ok, RL 28
+- imp9: RF, QQ, SL ok, RL 28, 22, (23)
+- imp10: RF, QQ, SL ok, RL 28
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed
+3. the numbers are row numbers, not subject codes!
+  + subject codes are:
+```{r}
+imp.des[[2]]$subject[28]
+```
+
+### Outcome 4: Fear memory
+```{r, echo=FALSE}
+par(mfrow = c(2, 2))
+for(i in 1:M){plot(ds.fear.m[[i]], main = paste0("DS Fm imp", i))}
+```
+
+#### Summary
+
+- imp1-6: RF, QQ, SL, RL all ok
+- imp7: RF, QQ, SL, RL (29 at line)
+- imp8: RF, QQ, SL, RL (29 & 27 at line)
+- imp9: RF, QQ, SL, RL 22, 27, (29 at line)
+- imp10: RF, QQ, SL, RL all ok
+
+**Conclusion:**
+
+1. the points above, 'outside' cooks distance, all have stResd below 3/-3, and are therefor not considered outliers. 
+2. no adjustments needed

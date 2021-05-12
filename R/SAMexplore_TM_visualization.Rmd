@@ -1,0 +1,317 @@
+---
+title: "Visualize TM results"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+editor_options: 
+  chunk_output_type: console
+---
+
+# Preparations
+
+The effects are visualized using the [estimated marginal effects](https://strengejacke.github.io/ggeffects/).
+
+- Marginal effects measure the change in the conditional mean of outcome 𝑦 when regressors change by one unit."https://stats.stackexchange.com/tags/marginal-effect/info"
+- It is customary to present such marginal effects
++ evaluated at own values of 𝑥 and 𝑧 and averaged for all individuals in the sample (average marginal effect or AME)
++ evaluated at the mean/median/modal values of 𝑥 and 𝑧 (marginal effect at representative values or MER)
++ estimated at specific values that are interesting to the analyst
+
+additional information on ggeffects
+
+- https://rstudio-pubs-static.s3.amazonaws.com/490532_5b04406f4d154f2d9b5a99ff488d644a.html
+- https://cran.r-project.org/web/packages/ggeffects/vignettes/ggeffects.html
+
+
+First the required packages are added.
+```{r setup, include=FALSE}
+rm(list=ls())
+# for imputed data
+library(mice)
+library(mitools)
+#visualization & export
+library(ggplot2)
+library(ggpubr)
+library(ggeffects) # for plotting interaction effects with EME
+library(RColorBrewer)
+# To make publication ready tables for word | info: https://davidgohel.github.io/flextable/articles/overview.html
+library(flextable) 
+library(officer)
+```
+
+```{r data, include=FALSE}
+source("R/SAMexplore_prepare.for.analyses.r")
+imputationList(imp.nos)->imp.nos2
+imputationList(imp.ims)->imp.ims2
+imputationList(imp.des)->imp.des2
+```
+
+general layout for plots
+```{r}
+my.plot.layout<-list( 
+  theme_classic() ,
+  theme(legend.position = "top"),
+  scale_color_brewer(palette="Dark2"),
+  theme(text = element_text(size=9)))
+```
+
+
+# Characteristics that influence memory context-dependency before acute stress
+
+## Context-dependency of emotional information
+There was a 3-way TA * cort * sAA interaction effect on context-dependency of emotional information before acute stress.
+
+```{r EME TA * cort * sAA on emotional memory without acute stress}
+fit.NS.EM.3way<-lm(emotional.memory~1+
+                     age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                     stress_exposure:STAI_T_total+ # 2 way
+                     stress_exposure:AUCi_sAA_1+
+                     stress_exposure:AUCi_CORT_1+
+                     STAI_T_total:AUCi_sAA_1+
+                     STAI_T_total:AUCi_CORT_1 +
+                     STAI_T_total:AUCi_sAA_1:AUCi_CORT_1+ 
+                     stress_exposure:AUCi_sAA_1:AUCi_CORT_1,
+                   data = imp.nos[[10]])
+
+# plots to explore the 3-way interaction
+emm.NS.EM.3way <- ggpredict(fit.NS.EM.3way, c("AUCi_sAA_1", "AUCi_CORT_1",  "STAI_T_total"))
+
+plot(emm.NS.EM.3way)
+# adjust labels
+levels(emm.NS.EM.3way$facet)<-c("STAI-T: mean-1SD", "STAI-T: mean","STAI-T: mean+1SD")
+levels(emm.NS.EM.3way$group)<-c("mean-1SD", "mean","mean+1SD")
+
+plot.NS.EM.TA.sAA.CO<-ggplot(emm.NS.EM.3way, aes(x, predicted, colour=group)) +
+  geom_line() +
+  facet_wrap(~facet) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .05, linetype='dotted',size=.3) + # remove lines with 'linetype=0'
+  labs( title=parse(text = paste0('"Emotional MC ~ trait anxiety"','%*%', '"cortisol"', '%*%', '"\u03b1-amylase"')),
+        subtitle="no stress (basal)",
+        colour = bquote("Z "["cortisol (AUCi)"]),
+        caption= "dPrime",
+        x=bquote("Z "["\u03b1-amylase (AUCi)"]),
+        y='predicted MC (EME)')+
+  my.plot.layout
+plot.NS.EM.TA.sAA.CO
+```
+
+
+
+# Characteristics that influence memory context-dependency 30min after acute stress
+Visualizations of significant relations in immediate stress-group
+
+## Context-dependency of emotional information
+Adding cumulative stress exposure to the TM model without 2-way interactions significantly improved the model.
+
+```{r EMM life-time stress on emotional memory 30min after acute stress}
+fit.IS.EM.main<-lm(emotional.memory ~1+age+BMI+
+                     stress_exposure+
+                     STAI_T_total+
+                     AUCi_sAA_1+
+                     AUCi_CORT_1, 
+                   data = imp.ims[[10]])
+
+emm.IS.EM.CS <- ggpredict(fit.IS.EM.main, c( "stress_exposure"))
+
+plot.IS.EM.CS<-ggplot(emm.IS.EM.CS, aes(x, predicted)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .1) +
+  labs( title="Emotional MC ~ life adversity",
+        subtitle="acute phase",
+        caption="dPrime",
+        x=bquote("Z "["CTQ"]* " + " * "Z " ["LSC-R"]),
+        y='predicted MC (EME)')+
+  my.plot.layout
+plot.IS.EM.CS
+```
+
+
+## Context-dependency of neutral information
+Adding AUCi of cortisol during learning to the TM model without 2-way interactions significantly improved the model.
+```{r EMM cortisol on neutral memory 30min after acute stress}
+fit.IS.NM.main<-lm(neutral.memory ~1+age+BMI+
+                     stress_exposure+
+                     STAI_T_total+
+                     AUCi_sAA_1+
+                     AUCi_CORT_1, 
+                   data = imp.ims[[10]])
+
+emm.IS.NM.CO <- ggpredict(fit.IS.NM.main, c( "AUCi_CORT_1"))
+
+plot.IS.NM.CO<-ggplot(emm.IS.NM.CO, aes(x, predicted)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .1) +
+  labs( title="Neutral MC ~ cortisol ",
+        subtitle="acute phase",
+        caption="dPrime",
+        x=bquote("Z "["cortisol (AUCi)"]),
+        y='predicted MC (EME)')+
+  my.plot.layout
+plot.IS.NM.CO
+```
+
+## Context-dependency of fear information
+Two interactions improved the TM without 3-way interactions. [- no effects on fear learning after stress]
+
+- stress-exposure x sAA (learning)
+- trait anxiety x cortisol (learning)
+
+### Interaction I: life adversity x AUC sAA
+
+Note The interaction is visualized by calculated EMMs for mean(stress-exposure)-1sd(stress-exposure), mean(stress-exposure) and  mean(stress-exposure)+1sd(stress-exposure)
+```{r}
+imp.ims[[10]]$stress_exposure %>% summary()
+imp.ims[[10]]$stress_exposure %>% mean()->mean
+imp.ims[[10]]$stress_exposure %>% mean_sd()
+imp.ims[[10]]$stress_exposure %>% sd()->sd
+mean+sd
+mean-sd
+```
+
+
+```{r EMM life-time stress * sAA on fear memory 30min after acute stress}
+fit.IS.FM.2way<-lm(fear.memory~1+ age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                     stress_exposure:STAI_T_total+ # 2 way
+                     stress_exposure:AUCi_sAA_1+
+                     stress_exposure:AUCi_CORT_1+
+                     STAI_T_total:AUCi_sAA_1 +
+                     STAI_T_total:AUCi_CORT_1,
+                   data = imp.ims[[10]])
+
+emm.IS.FM.CS.sAA <- ggpredict(fit.IS.FM.2way, terms=c( "AUCi_sAA_1", "stress_exposure"))
+
+# adjust labels
+levels(emm.IS.FM.CS.sAA$group)<-c("mean -1SD", "mean","mean +1SD")
+
+plot.IS.FM.CS.sAA<-ggplot(emm.IS.FM.CS.sAA, aes(x, predicted, colour=group)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .05, linetype='dotted',size=.3) + # remove lines with 'linetype=0'
+  labs( title=parse(text = paste0('"Fearful MC ~ life adversity"', '%*%', '"\u03b1-amylase"')),
+        subtitle="acute phase",
+        colour = bquote("Z "["CTQ"]* " + " * "Z " ["LSC-R"]),
+        caption = "FPS",
+        x=bquote("Z "["\u03b1-amylase (AUCi)"]),# unicode alpha code: https://stackoverflow.com/questions/5293715/how-to-use-greek-symbols-in-ggplot2
+        y='predicted MC (EME)') +
+  my.plot.layout
+plot.IS.FM.CS.sAA
+```
+
+
+### Interaction II: Trait Anxiety x AUC cortisol (immediate stress-group)
+
+```{r EMM TA * cortisol on fear memory 30min after acute stress}
+emm.IS.FM.TA.CO <- ggpredict(fit.IS.FM.2way, terms=c( "AUCi_CORT_1", "STAI_T_total"))
+
+# adjust labels
+levels(emm.IS.FM.TA.CO$group)<-c("mean-1SD", "mean","mean+1SD")
+
+plot.IS.FM.TA.CO<-ggplot(emm.IS.FM.TA.CO, aes(x, predicted, colour=group)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .05, linetype='dotted',size=.3) +
+  labs( title=parse(text = paste0('"Fearful MC ~ trait anxiety"', '%*%', '"cortisol"')),
+        subtitle="acute phase",
+        colour = bquote("Z "["STAI-T"]),
+        caption = "FPS",
+        x=bquote("Z "["cortisol (AUCi)"]),
+        y='predicted MC (EME)')+
+  my.plot.layout
+plot.IS.FM.TA.CO
+```
+
+
+# Characteristics that influence memory context-dependency 2h after acute stress
+
+## Context-dependency of neutral information
+
+Two interactions improved the TM without 3-way interactions.
+
+- stress-exposure x sAA (learning)
+- stress-exposure x cortisol (learning)
+
+### Interaction I: life adversity x AUC sAA
+more stress exposure, less negative effect of sAA on neutral memory contextualization?
+
+```{r EMMs life-time stress * sAA on neutral memory 2h after acute stress}
+fit.DS.NM.2way<-lm(neutral.memory~1+ age+BMI+stress_exposure+STAI_T_total+AUCi_sAA_1+AUCi_CORT_1+ #main effects
+                     stress_exposure:STAI_T_total+ # 2 way
+                     stress_exposure:AUCi_sAA_1+
+                     stress_exposure:AUCi_CORT_1+
+                     STAI_T_total:AUCi_sAA_1 +
+                     STAI_T_total:AUCi_CORT_1,
+                   data = imp.des[[10]])
+
+emm.DS.NM.CS.sAA <- ggpredict(fit.DS.NM.2way, terms=c( "AUCi_sAA_1", "stress_exposure"))
+
+# adjust labels
+levels(emm.DS.NM.CS.sAA$group)<-c("mean-1SD", "mean","mean+1SD")
+
+plot.DS.NM.CS.sAA<-ggplot(emm.DS.NM.CS.sAA, aes(x, predicted, colour=group)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .05, linetype='dotted',size=.3) +
+  labs( title=parse(text = paste0('"Neutral MC ~ life adversity"', '%*%', '"\u03b1-amylase"')),
+        subtitle="recovery phase",
+        colour = bquote("Z "["CTQ"]* " + " * "Z " ["LSC-R"]),
+        caption="dPrime",
+        x=bquote("Z "["\u03b1-amylase (AUCi)"]),
+        y="predicted MC (EME)")+
+  my.plot.layout
+plot.DS.NM.CS.sAA
+```
+
+### Interaction II: Cumulative stress exposure and Cortisol
+```{r EMMs life-time stress * cortisol on neutral memory 2h after acute stress}
+emm.DS.NM.CS.CO <- ggpredict(fit.DS.NM.2way, terms=c( "AUCi_CORT_1", "stress_exposure"))
+
+# adjust labels
+levels(emm.DS.NM.CS.CO$group)<-c("mean-1SD", "mean","mean+1SD")
+
+plot.DS.NM.CS.CO<-ggplot(emm.DS.NM.CS.CO, aes(x, predicted, colour=group)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = .05, linetype='dotted',size=.3) +
+  labs( title=parse(text = paste0('"Neutral MC ~ life adversity"', '%*%', '"cortisol"')),
+        subtitle="recovery phase",
+        colour = bquote("Z "["CTQ"]* " + " * "Z " ["LSC-R"]),
+        caption="dPrime",
+        x=bquote("Z "["cortisol (AUCi)"]),
+        y="predicted MC (EME)")+
+  my.plot.layout
+plot.DS.NM.CS.CO
+```
+
+
+# Summary & save
+
+All effects (in manuscript)
+```{r}
+ggarrange(
+  # immediate
+  ggarrange(
+    plot.IS.EM.CS, 
+    plot.IS.NM.CO,
+    plot.IS.FM.CS.sAA,
+    plot.IS.FM.TA.CO,
+    ncol = 2, nrow = 2,
+    heights=c(1,1.5),
+    labels=c("A", "B", "C", "D"),  common.legend = F),
+  
+  # delayed
+  ggarrange( 
+    plot.DS.NM.CS.sAA,
+    plot.DS.NM.CS.CO,
+    ncol = 2, nrow = 1,
+    labels = c("E","F"),
+    common.legend = F),
+  
+  # no stress
+  plot.NS.EM.TA.sAA.CO,
+  ncol = 1, nrow = 3, 
+  heights=c(1.5,1,1),
+  labels=c("","","G") 
+)
+
+ggsave("results/Figure.4.TM.tiff", device="tiff", dpi = 300, height = 12, width = 8, limitsize = T )
+```

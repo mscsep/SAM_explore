@@ -1,0 +1,411 @@
+---
+title: "pseudo-R2 vs R2"
+author: "Milou Sep"
+---
+
+Pseudo-R2 (used for for permutation statistics in SAMexplore_Rf_Boruta_interpretation.rmd) vs. R2 (used in SAMexplore_model.performance.evaluation.rmd)
+
+# Information & comparison
+
+> NOTE rf.significance() returns a different (model) R2 value then DALEX::model_performance() (used in "model.performance.evaluation" script).
+https://github.com/jeffreyevans/rfUtilities/blob/master/R/rf.significance.R
+
+The code below was used to check the origin of this difference. 
+
+> NOTE: rf.model can be derived from code in chunk 3 and 4 in SAMexplore_Rf_Boruta_interpretation.rmd code
+
+The difference is not due to input data, as feeding rf.model into DALEX::model_performance() here, give same results as the model in the "model.performance.evaluation" script.
+
+```{r eval=FALSE, include=FALSE}
+set.seed(seed)
+DALEX::explain(rf.model,
+               data=dataset2,   # performance calculated on this dataset
+               y=dataset2[,dependent.var]
+)->explained.model
+set.seed(seed)
+DALEX::model_performance(explained.model)
+```
+
+So the difference is due to R2 calculation. Exploration of the source code (see at the bottom of the code) shows that rf.significance() uses the (median of) pseudo-R2 (rsq) calculated by the randomForest() function (and also mse). See randomForest documentation [https://cran.r-project.org/web/packages/randomForest/randomForest.pdf]:
+- mse (regression only) vector of mean square errors: sum of squared residuals divided by n.
+- rsq (regression only) “pseudo R-squared”: 1 - mse / Var(y).
+
+```{r eval=FALSE, include=FALSE}
+print(rf.model$rsq)
+print(rf.model$mse)
+```
+
+DALEX::model_performance() [https://pbiecek.github.io/ema/modelPerformance.html#modelPerformanceIntro] calculates R2 (and other metrics), based on the difference between predicted and observed values (see source code in https://rdrr.io/cran/DALEX/src/R/model_performance.R and https://rdrr.io/cran/DALEX/src/R/model_performance.R#sym-model_performance_r2). 
+
+In brief, MSE is calculated as mean((predicted - observed)^2, na.rm = TRUE) and R2 is calculated as 1 -(mean((predicted - observed)^2) / (mean((mean(observed) - observed)^2))). Note this reflects the reported "R2 = 1-(mse(f)-mse(f-0))" in [https://pbiecek.github.io/ema/modelPerformance.html#modelPerformanceIntro])
+
+So the difference arises because rf.significance() calculates pseudo-R2 while DALEX::model_performance() calculates R2 based on the difference between predictions and observations. 
+
+NOTE: "A pseudo R-squared only has meaning when compared to another pseudo R-squared of the same type, on the same data, predicting the same outcome. In this situation, the higher pseudo R-squared indicates which model better predicts the outcome." [https://stats.idre.ucla.edu/other/mult-pkg/faq/general/faq-what-are-pseudo-r-squareds/#:~:text=A%20pseudo%20R%2Dsquared%20only,model%20better%20predicts%20the%20outcome.]
+
+```{r eval=FALSE, include=FALSE}
+# residuals are the same (from model below)
+explained.model$residuals
+performance$residuals
+# predictions are different
+rf.model$predicted
+```
+
+
+# Source code
+
+## rfUtilities::rf.significance()
+```{r eval=FALSE, include=FALSE}
+# rfUtilities::rf.significance(
+x=rf.model
+xdata=dataset2[,imp.vars]
+nperm=3
+
+function (x, xdata, q = 0.99, p = 0.05, nperm = 999, ...) 
+{
+  if (!inherits(x, "randomForest")) 
+    stop("x is not randomForest class object")
+  class.p <- function(x, test, nperm) {
+    if (length(x[x >= test]) < 1) {
+      error = 1
+    }
+    else {
+      error = length(x[x < test])
+    }
+    return(error/nperm)
+  }
+  
+  # pValue = round(regress.p(x = rand.dist, test = test.rsq, 
+  #                          nperm = nperm), digits = 6)
+  
+  regress.p <- function(x, test, nperm) {
+    if (length(x[x >= test]) < 1) {
+      error = 1
+    }
+    else {
+      error = length(x[x >= test])
+    }
+    return(error/nperm)
+  }
+  # if (x$type == "classification") {
+  #   test.oob <- stats::median(x$err.rate[, 1])
+  #   test.max <- stats::median(max(x$err.rate[, -1]))
+  #   rand.oob <- vector()
+  #   rand.max <- vector()
+  #   for (i in 1:nperm) {
+  #     rand.y <- sample(x$y, length(x$y))
+  #     rf.test <- randomForest::randomForest(x = xdata, 
+  #                                           y = rand.y, ...)
+  #     rand.oob <- append(rand.oob, stats::median(rf.test$err.rate[, 
+  #                                                                 1]))
+  #     rand.max <- append(rand.max, stats::median(max(rf.test$err.rate[, 
+  #                                                                     -1])))
+  #   }
+  #   pValue = round(class.p(x = rand.oob, test = test.oob, 
+  #                          nperm = nperm), digits = 6)
+  #   sig <- list(RandOOB = rand.oob, RandMaxError = rand.max, 
+  #               test.OOB = test.oob, test.MaxError = test.max, TestQuantile = q, 
+  #               pValueThreshold = p, pValue = pValue, nPerm = nperm, 
+  #               rf.type = x$type)
+  #   class(sig) <- c("significance", "list")
+  #   return(sig)
+  # }
+  if (x$type == "regression") {
+    if (is.factor(x$y)) 
+      stop("y cannot be a factor")
+    test.rsq <- stats::median(x$rsq)
+    test.mse <- stats::median(x$mse)
+    rand.dist <- vector()
+    for (i in 1:nperm) {
+      rand.y <- sample(x$y, length(x$y))
+      rf.test <- randomForest::randomForest(x = xdata, 
+                                            y = rand.y)
+      rand.dist <- append(rand.dist, stats::median(rf.test$rsq))
+    }
+    pValue = round(regress.p(x = rand.dist, test = test.rsq, 
+                             nperm = nperm), digits = 6)
+    sig <- list(RandRsquare = rand.dist, Rsquare = test.rsq, 
+                TestQuantile = q, pValueThreshold = p, pValue = pValue, 
+                nPerm = nperm, rf.type = x$type)
+    class(sig) <- c("significance", "list")
+    return(sig)
+  }
+}
+```
+
+
+## rfUtilities/R/rf.significance.R from github
+@jeffreyevans
+```{r rfUtilities/R/rf.significance.R eval=FALSE, include=FALSE}
+#' @title Random Forest model significance test 
+#' @description Performs significance test for classification and regression 
+#'              Random Forests models. 
+#'
+#' @param x              randomForest class object
+#' @param nperm          Number of permutations
+#' @param randomization  Fraction (0.01-1) of randomization, 
+#'                       default is 1 (total randomization) 
+#' @param kappa          (FALSE/TRUE) In classification, use kappa rather
+#'                       than percent correctly classified
+#'
+#' @return A list class object with the following components:
+#' For Regression problems:    
+#' * RandR.square Vector of random R-square values 
+#' * R.square The R-square of the "true" model
+#' * p.value p-values of randomizations of R-square
+#' * ks.p.value p-value(s) evaluation of Kolmogorov-Smirnov test
+#' * nPerm number of permutations 
+#' * rf.type Type of Random Forests
+#' * rand.frac Amortization fraction
+#'
+#' For Classification problems:
+#' * RandOOB Vector of random out-of-bag (OOB) values 
+#' * RandMaxError Maximum error of randomizations 
+#' * test.OOB Error OOB error of the "true" model
+#' * test.MaxError maximum class OOB error of the "true" model
+#' * p.value p-value based on Mcnemar's test
+#' * oop.p.value p-value based on permutation of OOB error
+#' * nPerm Number of permutations 
+#' * rf.type Type of Random Forests
+#' * rand.frac Amortization fraction
+#' @md
+#'
+#' @note
+#' Please note that previous versions of this function required xdata and "..."  
+#' arguments that are no longer necessary. The model object is now used in 
+#' obtaining the data and arguments used in the original model  
+#'
+#' @details
+#' If the p-value is small, it suggests a near certainty 
+#' that the difference between the two populations is 
+#' significant. alternative = c("two.sided", "less", "greater")
+#'
+#' @author Jeffrey S. Evans <jeffrey_evans@@tnc.org>
+#'
+#' @references 
+#' Murphy M.A., J.S. Evans, and A.S. Storfer (2010) Quantify Bufo 
+#'   boreas connectivity in Yellowstone National Park with landscape 
+#'   genetics. Ecology 91:252-261
+#' @references 
+#' Evans J.S., M.A. Murphy, Z.A. Holden, S.A. Cushman (2011). Modeling 
+#'   species distribution and change using Random Forests CH.8 in  
+#'   PredictiveModeling in Landscape Ecology eds Drew, CA, 
+#'   Huettmann F, Wiersma Y. Springer 
+#' 
+#' @examples 
+#' \dontrun{
+#' #### Regression
+#' library(randomForest)
+#' library(ranger)
+#' 
+#'   set.seed(1234)	
+#'   data(airquality)
+#'   airquality <- na.omit(airquality)
+#'  
+#'  # randomForest 
+#'  ( rf.mdl <- randomForest(x=airquality[,2:6], y=airquality[,1]) )
+#'    ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#'
+#'  # ranger
+#'  ( rf.mdl <- ranger(x=airquality[,2:6], y=airquality[,1]) )
+#'    ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#'
+#'  
+#' #### Classification
+#' ydata = as.factor(ifelse(airquality[,1] < 40, 0, 1))
+#' ( rf.mdl <- ranger(x = airquality[,2:6], y = ydata) )
+#'       ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#'	   
+#' ( rf.mdl <- randomForest(x = airquality[,2:6], y = ydata) )
+#'      ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#' 
+#' 
+#'   set.seed(1234)	
+#'     data(iris)
+#'       iris$Species <- as.factor(iris$Species) 
+#'	
+#'  	
+#'  ( rf.mdl <- randomForest(x=iris[,1:4], y=iris[,"Species"]) )
+#'    ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#'
+#'  ( rf.mdl <- ranger(x=iris[,1:4], y=iris[,"Species"]) )
+#'    ( rf.perm <- rf.significance(rf.mdl, nperm=99) )
+#'
+#' }
+#'
+#' @exportClass significance 
+#' @export
+rf.significance <- function(x, nperm = 999, randomization = 1, 
+                            kappa = FALSE) { 
+  if (!inherits(x, c("randomForest", "ranger"))) 
+    stop("x is not randomForest class object")
+  if(length(grep("~", x$call[[2]])) > 0)
+    stop("This package does not support a formula interface, please use x, y arguments")
+  if(randomization <= 0.01 | randomization > 1)
+    stop("randomization fraction must be between 0.01 - 1")
+  if(inherits(x, "randomForest")) {
+    mtype <- tolower(x$type)
+  } else if(inherits(x, "ranger")) {
+    mtype <- tolower(x$treetype)
+  }
+  calculate.p <- function(x, test, nperm) { 
+    if ( length( x[x >= test] ) < 1 ) { 
+      return( 0 )
+    } else { 
+      return( round(length(x[x >= test]) / nperm, 5) )
+    }	
+  }
+  options(warn=-1)	
+  #*********************************	
+  if(mtype == "classification") {
+    #*********************************
+    ptest = TRUE
+    mdl.call <- as.list(x$call)[-1]  
+    obs = eval(mdl.call[[which(names(mdl.call) == "y")]])
+    if(length(unique(obs)) > 2) ptest = FALSE
+    if(inherits(x, "ranger")) { 
+      cm <- accuracy(x$confusion.matrix)
+      if(ptest == FALSE) {
+        test.p <- NA
+      } else {
+        test.p <- stats::mcnemar.test(table(x$predictions, obs))$p.value
+      }	  
+    } else if(inherits(x,"randomForest")) {
+      cm <- accuracy(x$confusion[,1:(ncol(x$confusion)-1)])
+      if(ptest == FALSE) {
+        test.p <- NA
+      } else {
+        test.p <- stats::mcnemar.test(table(x$predicted, obs))$p.value	  
+      }
+    }
+    if(kappa) { test.oob <- cm$kappa }else{ test.oob <- cm$PCC }	
+    test.max <- max(cm$producers.accuracy, na.rm=TRUE) 
+    rand.oob <- vector()
+    rand.max <- vector()
+    rand.p <- vector()	
+    for(i in 1:nperm) {
+      a <- as.list(x$call)[-1]  
+      ydata = eval(a[[which(names(a) == "y")]])
+      if(kappa == TRUE) {
+        if(length(unique(ydata)) > 2) {
+          kappa = FALSE 
+          kappa.warn = TRUE
+        }
+      } 
+      ns <- round(length(ydata) * randomization,0)
+      yidx <- sample(1:length(ydata), ns) 
+      ridx <- sample(yidx,replace=FALSE)
+      y.new <- ydata 
+      for(r in 1:length(yidx)) { y.new[yidx] <- y.new[ridx]  }
+      a[["y"]] <- y.new 	
+      if(inherits(x, "ranger")) {    
+        rfr <- do.call(ranger::ranger, a)
+        cm <- accuracy(rfr$confusion.matrix)
+        if(ptest == FALSE) {
+          test.p <- NA
+        } else {
+          rand.p[i] <- stats::mcnemar.test(table(rfr$predictions, ydata))$p.value
+        }  
+      } else if(inherits(x,"randomForest")) {
+        rfr <- do.call(randomForest::randomForest, a)
+        cm <- accuracy(rfr$confusion[,1:(ncol(rfr$confusion)-1)])
+        if(ptest == FALSE) {
+          test.p <- NA
+        } else {			
+          rand.p[i] <- stats::mcnemar.test(table(rfr$predicted, ydata))$p.value
+        }
+      }
+      if(kappa) { rand.oob[i] <- cm$kappa }else{ rand.oob[i] <- cm$PCC }
+      rand.max[i] <- max(cm$producers.accuracy, na.rm=TRUE)		
+    }
+    if(exists("kappa.warn")){
+      if(kappa.warn == TRUE)
+        warning("Cannot run Kappa on more than 2 classes, reverting to PCC")
+    }   
+    if(ptest == FALSE) {
+      p.value <- NA
+    } else {
+      p.value <- calculate.p(x=rand.p, test=test.p, nperm=nperm)	 
+    }
+    oob.p.value = calculate.p(x=rand.oob, test=test.oob, nperm=nperm)
+    sig <- list(RandOOB = 1-(rand.oob/100), RandMaxError = 1-(rand.max/100), 
+                test.OOB = 1-(test.oob/100), test.MaxError = 1-(test.max/100), 
+                p.value = p.value, oob.p.value = oob.p.value, nPerm = nperm, 
+                rf.type = mtype, rand.frac = randomization, use.kappa=kappa)		   
+    #*********************************	
+  } else if(mtype == "regression") {
+    #*********************************	
+    mdl.call <- as.list(x$call)[-1]  
+    obs = eval(mdl.call[[which(names(mdl.call) == "y")]])
+    if(inherits(x, "ranger")) { 
+      test.rsq <- x$r.squared
+      test.mse <- x$prediction.error
+      p.equal.test <- stats::ks.test(x$predictions, stats::ecdf(obs), 
+                                     alternative ="two.sided", exact=TRUE)$p.value
+      p.lt.test <- stats::ks.test(x$predictions, stats::ecdf(obs), 
+                                  alternative ="less", exact=TRUE)$p.value
+      p.gt.test <- stats::ks.test(x$predictions, stats::ecdf(obs), 
+                                  alternative ="greater", exact=TRUE)$p.value
+    } else if(inherits(x,"randomForest")) {
+      test.rsq <- stats::median(x$rsq)
+      test.mse <- stats::median(x$mse)
+      p.equal.test <- stats::ks.test(x$predicted, stats::ecdf(obs), 
+                                     alternative ="two.sided", exact=TRUE)$p.value
+      p.lt.test <- stats::ks.test(x$predicted, stats::ecdf(obs), 
+                                  alternative ="less", exact=TRUE)$p.value
+      p.gt.test <- stats::ks.test(x$predicted, stats::ecdf(obs), 
+                                  alternative ="greater", exact=TRUE)$p.value
+    }
+    rand.rsq <- vector()
+    rand.mse <- vector()
+    p.equal <- vector()	
+    p.lt <- vector() 
+    p.gt <- vector() 
+    for(i in 1:nperm) {
+      a <- as.list(x$call)[-1]  
+      ydata = eval(a[[which(names(a) == "y")]])
+      ns <- round(length(ydata) * randomization,0)
+      yidx <- sample(1:length(ydata), ns) 
+      ridx <- sample(yidx,replace=FALSE)
+      y.new <- ydata 
+      for(r in 1:length(yidx)) { y.new[yidx] <- y.new[ridx]  }
+      a[["y"]] <- y.new 
+      if(inherits(x, "ranger")) {    
+        rfr <- do.call(ranger::ranger, a)
+        rand.rsq[i] <- rfr$r.squared  
+        rand.mse[i] <- rfr$prediction.error
+        p.equal[i] <- stats::ks.test(rfr$predictions, stats::ecdf(obs), 
+                                     alternative ="two.sided", exact=TRUE)$p.value
+        p.lt[i] <- stats::ks.test(rfr$predictions, stats::ecdf(obs), 
+                                  alternative ="less", exact=TRUE)$p.value
+        p.gt[i] <- stats::ks.test(rfr$predictions, stats::ecdf(obs), 
+                                  alternative ="greater", exact=TRUE)$p.value
+      } else if(inherits(x,"randomForest")) {
+        rfr <- do.call(randomForest::randomForest, a)
+        rand.rsq[i] <- stats::median(rfr$rsq)
+        rand.mse[i] <- stats::median(rfr$mse)
+        p.equal[i] <- stats::ks.test(rfr$predicted, stats::ecdf(obs), 
+                                     alternative ="two.sided", exact=TRUE)$p.value
+        p.lt[i] <- stats::ks.test(rfr$predicted, stats::ecdf(obs), 
+                                  alternative ="less", exact=TRUE)$p.value
+        p.gt[i] <- stats::ks.test(rfr$predicted, stats::ecdf(obs), 
+                                  alternative ="greater", exact=TRUE)$p.value
+      }
+    }
+    p.equal[is.nan(p.equal)] <- 0	
+    p.lt[is.nan(p.lt)] <- 0  
+    p.gt[is.nan(p.gt)] <- 0  
+    ks.pValue = data.frame(
+      ks.equal = calculate.p(x = p.equal, test = p.equal.test, nperm = nperm),
+      ks.lt = calculate.p(x = p.lt, test = p.lt.test, nperm = nperm),
+      ks.gt = calculate.p(x = p.gt, test = p.gt.test, nperm = nperm))
+    rsq.pValue = round(calculate.p(x = rand.rsq, test = test.rsq, nperm = nperm), digits=5)
+    sig <- list(RandR.square = rand.rsq, R.square = test.rsq, p.value = rsq.pValue,  
+                ks.p.value = ks.pValue, nPerm = nperm, rf.type = mtype,  
+                rand.frac = randomization)
+  }
+  options(warn=0)
+  class(sig) <- c("significance","list")
+  return( sig )			   
+} 
+```

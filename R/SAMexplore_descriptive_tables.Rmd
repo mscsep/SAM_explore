@@ -1,0 +1,202 @@
+---
+title: "Descriptive Tabels SAMexplore"
+author: "Milou Sep"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: yes
+    number_sections: yes
+    df_print: kable
+    fig_width: 10
+---
+
+# Set-up: load data
+```{r setup}
+rm(list=ls())
+library(arsenal) # https://cran.r-project.org/web/packages/arsenal/vignettes/tableby.html
+library(dplyr)
+```
+
+
+this data was created by reprocessing raw data (with prep code in imputation script), this preprocessed data was then saved to the implist en auc were calculated in AUCcalc script. THEN use part of'prepare for analysis code to select only vars included in data
+```{r load data}
+readRDS("processed_data/implist.withRAW11.rds")->implist
+M=11
+implist[[11]] ->raw_df
+implist[[1]] ->imp_df
+rbind(raw_df, imp_df)->merged_df
+```
+
+# Descriptives missing values
+```{r}
+# before imputation
+# Number of missing values per composite variable (before multiple imputation). 
+# https://cran.r-project.org/web/packages/arsenal/vignettes/tableby.html#modify-how-missing-values-are-displayed
+apply(is.na(raw_df),2,sum) %>% data.frame() ->missings # 2 indicates columns
+which(rownames(missings) == "fear.learning")
+summary(missings[-which(rownames(missings) == "fear.learning"),]) #NB fear.at learning not included in further analysis.
+missings[-which(rownames(missings) == "fear.learning"),]->miss.raw
+min(miss.raw)/nrow(raw_df) *100
+max(miss.raw)/nrow(raw_df) *100
+mean(miss.raw)/nrow(raw_df) *100
+
+# The number of participants with at least one missing value (before multiple imputation) 
+raw_df %>% select(!fear.learning) -> dat1
+apply(is.na(dat1),1,sum)  ->missings.per.participant # 1 indicates rows.
+sum(missings.per.participant > 1)
+(sum(missings.per.participant > 1) / length(missings.per.participant)) *100
+
+# after imputation
+# Number of missing values per composite variable (after multiple imputation)
+apply(is.na(imp_df),2,sum) %>% data.frame() ->missings.imp
+missings.imp[-which(rownames(missings.imp) == "fear.learning"),]->miss.imp
+summary(missings.imp[-which(rownames(missings.imp) == "fear.learning"),])
+min(miss.imp)/nrow(imp_df) *100
+max(miss.imp)/nrow(imp_df) *100
+(mean(miss.imp)/nrow(imp_df)) *100
+
+# The number of participants with at least one missing value (after multiple imputation) 
+imp_df %>% select(!fear.learning) -> dat2
+apply(is.na(dat2),1,sum)  ->missings.per.participant.after.imputation # 1 indicates rows.
+sum(missings.per.participant.after.imputation > 1) 
+(sum(missings.per.participant.after.imputation > 1) / length(missings.per.participant.after.imputation)) *100
+```
+
+# Collect variabels that were included in boruta
+```{r}
+# calculate z-scores [Note, same formula as in 'prepare for analysis' script]
+raw_df %>% 
+  # https://www.r-bloggers.com/r-tutorial-series-centering-variables-and-generating-z-scores-with-the-scale-function/
+  mutate_if(is.numeric, ~as.vector(scale(.,center = TRUE, scale = TRUE))) ->x.new2 # solution to drop attributes (from scale)
+
+# create cumulative stress measure by sum of centered z-scores:
+raw_df$stress_exposure<- x.new2$JTV_total + x.new2$LSC_event_total
+
+plyr::revalue(raw_df$Condition, c("No-Stress"="No stress group", "Immediate-Stress"="Acute phase group", "Delayed-Stress" = "Recovery phase group"))->raw_df$Condition
+
+# Change labels to English
+mutate_at(raw_df,c("roken", "alcohol", "drugs", "nachtritme_verst"), ~recode(.,"[0] Nee"="No", "[1] Ja"="Yes"))->raw_df
+mutate_at(raw_df,c("psychol", "lich_ziekte"), ~recode(.,"0"="No", "1"="Yes"))->raw_df
+```
+
+# Relabel variables
+```{r}
+table.labels<-c(subject="subject ID",
+                BMI	= "BMI",
+                age	= "age",
+                Condition =	"Experimental Group",
+                roken	= "smoking",
+                alcohol	= "alcohol",
+                drugs	= "recreational drugs",
+                psychol	= "history of mental illnesses",
+                lich_ziekte	= "history of physical illnesses",
+                nachtritme_verst =	"disrupted day/night rhythm",
+                SCL_total	= "SCL (total)",
+                JTV_total	= "CTQ (total)",
+                LSC_event_total =	"LSC-R (total)",
+                stress_exposure	= "Life Adversity (z(CTQ )+ z(LSCR))",
+                
+                STAI_T_total =	"STAI-T (total)",
+                HEXACO_hh.mean = "Honesty-Humility (HEXACO subscale)",         
+                HEXACO_emo.mean = "Emotionality (HEXACO subscale)",
+                HEXACO_extr.mean = "Extraversion (HEXACO subscale)",       
+                HEXACO_ag.mean = "Agreeableness (HEXACO subscale)",
+                HEXACO_co.mean = "Conscientiousness (HEXACO subscale)",
+                HEXACO_op.mean = "Openness to Experience (HEXACO subscale)",
+                
+                VTCI_NS_total = 'Novelty Seeking (TCI-SF subscale)', 
+                VTCI_HA_total= 'Harm Avoidance (TCI-SF subscale)', 
+                VTCI_RD_total= 'Reward Dependence (TCI-SF subscale)', 
+                VTCI_PS_total= 'Persistence (TCI-SF subscale)', 
+                VTCI_SD_total= 'Self-Directedness (TCI-SF subscale)', 
+                VTCI_CO_total= 'Cooperativeness (TCI-SF subscale)', 
+                VTCI_ST_total= 'Self-Transcendence (TCI-SF subscale)',
+                
+                AUCg_CORT_1 =	"Cortisol (AUCg) at learning",
+                AUCg_sAA_1	= "sAA (AUCg) at learning",
+                AUCg_CORT_2	= "Cortisol (AUCg) at retention",
+                AUCg_sAA_2	= "sAA (AUCg) at retention",
+                AUCi_CORT_1	= "Cortisol (AUCi) at learning",
+                AUCi_sAA_1	= "sAA (AUCi) at learning",
+                AUCi_CORT_2	= "Cortisol (AUCi) at retention",
+                AUCi_sAA_2	= "sAA (AUCi) at retention",
+
+                AUCg_VAS_anxiety_1	= "VAS arousal (AUCg) at learning",
+                AUCg_VAS_mood_1	= "VAs mood (AUCg) at learning",
+                AUCg_VAS_anxiety_2	= "VAS arousal (AUCg) at retention",
+                AUCg_VAS_mood_2	= "VAS mood (AUCg) at retention",
+                AUCi_VAS_anxiety_1 =	"VAS arousal (AUCi) at learning",
+                AUCi_VAS_mood_1	= "VAS mood (AUCi) at learning",
+                AUCi_VAS_anxiety_2 =	"VAS arousal (AUCi) at retention",
+                AUCi_VAS_mood_2 =	"VAS mood (AUCi) at retention",
+
+                AUCg_stais_1 =	'STAI-S (AUCg) at learning',
+                AUCg_stais_2 =	"STAI-S (AUCg) at retention",
+                AUCi_stais_1 =	"STAI-S (AUCi) at learning",
+                AUCi_stais_2 =	"STAI-S (AUCi) at retention",
+                AUCg_panas_NegA_1	= "PANAS Negative Affect (AUCg) at learning",
+                AUCg_panas_PosA_1	= "PANAS Positive Affect (AUCg) at learning",
+                AUCg_panas_NegA_2	= "PANAS Negative Affect (AUCg) at retention",
+                AUCg_panas_PosA_2	= "PANAS Positive Affect (AUCg) at retention",
+                AUCi_panas_NegA_1	= "PANAS Negative Affect (AUCi) at learning",
+                AUCi_panas_PosA_1	= "PANAS Positive Affect (AUCi) at learning",
+                AUCi_panas_NegA_2	= "PANAS Negative Affect (AUCi) at retention",
+                AUCi_panas_PosA_2	= "PANAS Positive Affect (AUCi) at retention",
+                
+                fear.memory = "Fearful MC",
+                fear.learning = "Only for fear MC: fear acquisition",
+                neutral.memory = "Neutral MC",
+                emotional.memory = "Emotional MC"
+)
+
+!(data.frame(table.labels) %>% row.names() %in% 
+    c("fear.memory", #"fear.at learning", 
+      "neutral.memory", "emotional.memory", "Condition")) ->boruta.variabels.index
+
+# export labeled variables
+data.frame(table.labels)[boruta.variabels.index,] %>% write.csv2(.,"results/boruta.vars.labeled.csv")
+```
+
+# set "layout" controls tableby 
+```{r}
+# https://rdrr.io/cran/arsenal/man/tableby.control.html
+mycontrols  <- tableby.control( test=T, total=T,
+                                na.rm=F,
+                                numeric.stats=c( "meansd","range","Nmiss"),
+                                cat.stats = c("countpct", "Nmiss"),
+                                ord.stats= c("countpct","Nmiss"),
+                                stats.labels=list(Nmiss='Missing', Nmiss2='Missing', countpct="test",
+                                                  meansd="Mean (SD)", range="Range"),
+                                pfootnote=TRUE,
+                                cat.simplify = T, numeric.simplify = T, ordered.simplify = T,
+                                digits=2,
+                                digits.p=2,
+                                digits.count=0,
+                                digits.pct=2 )
+```
+
+# Create table
+```{r}
+raw_df %>% select(-c(fear.learning, subject)) ->raw_df
+
+# create table (of raw data)
+tableby(Condition ~., data=raw_df, control = mycontrols)->raw.table
+
+summary(raw.table,
+        title = "Raw scores SAM study",
+        labelTranslations = table.labels)
+# tests(raw.table)
+```
+
+# Export to word file
+```{r}
+# save tables to word
+write2word(raw.table, "results/descriptive table (raw).doc", title="Raw scores SAM study",
+           labelTranslations = table.labels)
+# write2word(merged.table, "results/descriptive table (raw and imp).doc", title="Raw and imputed scores SAM study")
+```
+
+# Exprot to CSV file
+```{r}
+# write.csv2(as.data.frame(summary(raw.table)),"results/descriptive table (raw).csv")
+```
